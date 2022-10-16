@@ -53,15 +53,29 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(define (uniquify-name env)
+  (lambda (x)
+    (string->symbol (string-append 
+      (symbol->string x) 
+      (number->string 
+        (add1 (if (dict-has-key? env x)
+          (string->number
+                (substring (symbol->string (dict-ref env x))
+                           (string-length (symbol->string x))
+                           ))
+          0
+          )))))))
 
 (define (uniquify-exp env)
   (lambda (e)
     (match e
       [(Var x)
-       (error "TODO: code goes here (uniquify-exp, symbol?)")]
+       (Var (dict-ref env x))]
       [(Int n) (Int n)]
       [(Let x e body)
-       (error "TODO: code goes here (uniquify-exp, let)")]
+       (let* ([unique-name ((uniquify-name env) x)]
+              [new-env (dict-set env x unique-name)])
+         (Let unique-name ((uniquify-exp new-env) e) ((uniquify-exp new-env) body)))]
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
