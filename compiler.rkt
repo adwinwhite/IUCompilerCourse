@@ -84,9 +84,38 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
+
+(define remove-complex-opera-exp
+  (lambda (e)
+    (match e
+      [(Var x)
+       (Var x)]
+      [(Int n) (Int n)]
+      [(Let x e body)
+       (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
+      [(Prim '- (list e))
+        (if (atm? e) 
+          (Prim '- (list e))
+          (Let 'tmp (remove-complex-opera-exp e) (Prim '- (list (Var 'tmp)))))]
+      [(Prim op (list e1 e2))
+        (match (cons (atm? e1) (atm? e2))
+          [(cons #t #t)
+           (Prim op (list e1 e2))]
+          [(cons #t #f)
+           (Let 'tmp (remove-complex-opera-exp e2) (Prim op (list e1 (Var 'tmp))))]
+          [(cons #f #t)
+           (Let 'tmp (remove-complex-opera-exp e1) (Prim op (list (Var 'tmp) e2)))]
+          [(cons #f #f)
+            (Let 'tmp1 (remove-complex-opera-exp e1) (
+              Let 'tmp2 (remove-complex-opera-exp e2) (
+                Prim op (list (Var 'tmp1) (Var 'tmp2)))))])])))
+
+
+
 ;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
-  (error "TODO: code goes here (remove-complex-opera*)"))
+  (match p
+    [(Program info e) (Program info ((uniquify-exp '()) (remove-complex-opera-exp e)))]))
 
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
@@ -114,7 +143,7 @@
 (define compiler-passes
   `( ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ;; Uncomment the following passes as you finish them.
-     ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
