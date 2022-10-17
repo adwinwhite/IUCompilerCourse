@@ -4,6 +4,7 @@
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
+(require "interp.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
@@ -138,9 +139,41 @@
   (match p
     [(Program info e) (CProgram info (dict-set '() 'start  (explicate_tail e)))]))
 
+(define (atm->args a)
+  (match a
+    [(Var x) (Var x)]
+    [(Int n) (Imm n)]
+    [else (error "not atm" a)]))
+
+(define (assign-arg->instrs arg exp)
+  (match exp
+    [(? atm?) (list (Instr 'movq (list (atm->args exp) arg)))]
+    [(Prim 'read '()) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) arg)))]
+    [(Prim '- (list e)) (list (Instr 'movq (list (atm->args e) arg)) (Instr 'negq (list arg)))]
+    [(Prim '+ (list e1 e2)) (list (Instr 'movq (list (atm->args e1) arg)) (Instr 'addq (list (atm->args e2) arg)))]
+    [(Prim '- (list e1 e2)) (list (Instr 'movq (list (atm->args e1) arg)) (Instr 'subq (list (atm->args e2) arg)))]
+    [else (error "invalid expression in assignment statement" exp)]))
+
+
+
+(define (stmt->instrs s)
+  (match s
+    [(Assign x exp) (let ([arg (atm->args x)]) (assign-arg->instrs arg exp))]
+    [else (error "stmt->instrs unhandled statements" s)]))
+  
+
+(define (ret->instrs e)
+  (append (assign-arg->instrs (Reg 'rax) e) (list (Jmp 'conclusion))))
+
+(define (tail->instrs t)
+  (match t
+    [(Seq fst snd) (append (stmt->instrs fst) (tail->instrs snd))]
+    [(Return e) (append (ret->instrs e) '())]))
+
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
-  (error "TODO: code goes here (select-instructions)"))
+  (match p
+    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() 'start  (Block info (tail->instrs tail))))]))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
 (define (assign-homes p)
@@ -162,7 +195,7 @@
      ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-     ;; ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
