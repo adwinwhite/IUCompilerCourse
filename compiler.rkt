@@ -232,9 +232,25 @@
     [(X86Program info (list (cons label (Block _ instrs)))) (let ([instrs-loc ((assign-homes-instrs info) instrs)]) 
                                                               (X86Program (dict-set info 'stack-space (cdr instrs-loc)) (list (cons label (Block '() (car instrs-loc))))))]))
 
+
+(define (patch-instrs instrs)
+  (apply append (map (lambda (instr)
+                       (match instr
+                          [(Instr name (list (Deref 'rbp loc1) (Deref 'rbp loc2)))
+                           (list (Instr 'movq (list (Deref 'rbp loc1) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref 'rbp loc2))))]
+                          [(Instr name args)
+                            (match args
+                              [(list (Imm n) ...)
+                                (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr name (list (Reg 'rax) (cdr args))))]
+                              [else (list (Instr name args))])]
+                          [else (list instr)]))
+               instrs)))
+
+
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+  (match p
+    [(X86Program info (list (cons label (Block _ instrs)))) (X86Program info (list (cons label (Block '() (patch-instrs instrs)))))]))
 
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
@@ -250,6 +266,6 @@
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
