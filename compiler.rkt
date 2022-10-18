@@ -173,11 +173,64 @@
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
   (match p
-    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() 'start  (Block info (tail->instrs tail))))]))
+    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() 'start  (Block '() (tail->instrs tail))))]))
+
+(define (type-size t) 
+  (match t
+    ['Integer 8]
+    [else (error "unrecognized type" t)]))
+
+(define (var-size v locals-types)
+  (type-size (dict-ref locals-types v)))
+
+(define (stack-top locs) 
+  (if (dict-empty? locs)
+      0
+      (apply max (dict-values locs))))
+
+(define (arg-to-stack-loc info)
+  (lambda (arg locs)
+    (match arg
+      [(Var x) 
+        (if (dict-has-key? locs x)
+            (cons (Deref 'rbp (dict-ref locs x)) locs)
+            (let*  ([top (stack-top locs)]
+                    [locals-types (dict-ref info 'locals-types)]
+                    [s (var-size x locals-types)]
+                    [new-top (+ top s)])
+                        (cons (Deref 'rbp new-top) (dict-set locs x new-top))))]
+      [else (cons arg locs)])))
+
+
+(define (var-to-stack-loc info)
+  (lambda (instr locs)
+    (let ([to-stack-loc (arg-to-stack-loc info)])
+      (match instr
+        [(Instr name (list arg)) (let ([arg-locs (to-stack-loc arg locs)]) (cons (Instr name (list (car arg-locs))) (cdr arg-locs)))]
+        [(Instr name (list arg1 arg2)) (let* ([arg-locs1 (to-stack-loc arg1 locs)]
+                                              [arg-locs2 (to-stack-loc arg2 (cdr arg-locs1))])
+                                         (cons (Instr name (list (car arg-locs1) (car arg-locs2))) (cdr arg-locs2)))]
+        [else (cons instr locs)]))))
+
+
+(define (assign-homes-instrs info)
+  (lambda (instrs)
+    (let ([frame (foldl (lambda (instr acc)
+                          (let ([instr-loc ((var-to-stack-loc info) instr (cdr acc))])
+                          (cons (append (car acc) (list (car instr-loc))) (cdr instr-loc))))
+                        (cons '() '())
+                        instrs)])
+        (let* ([top (stack-top (cdr frame))]
+               [remainder (modulo top 16)])
+             (if (= 0 remainder)
+                 (cons (car frame) top)
+                 (cons (car frame) (+ top (- 16 remainder))))))))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
 (define (assign-homes p)
-  (error "TODO: code goes here (assign-homes)"))
+  (match p
+    [(X86Program info (list (cons label (Block _ instrs)))) (let ([instrs-loc ((assign-homes-instrs info) instrs)]) 
+                                                              (X86Program (dict-set info 'stack-space (cdr instrs-loc)) (list (cons label (Block '() (car instrs-loc))))))]))
 
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
@@ -196,7 +249,7 @@
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
-     ;; ("assign homes" ,assign-homes ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
