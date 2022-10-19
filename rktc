@@ -1,0 +1,9 @@
+#! /usr/bin/env racket
+#lang racket
+
+(require racket/cmdline)
+(require "utilities.rkt")
+(require "compiler.rkt")
+
+(command-line 
+  #:args (filename) ((compile-file #f compiler-passes) filename))

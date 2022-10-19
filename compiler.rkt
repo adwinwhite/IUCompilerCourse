@@ -30,22 +30,116 @@
 
 
 ;; Next we have the partial evaluation pass described in the book.
-(define (pe-neg r)
-  (match r
+(define (pe-neg ic)
+  (match ic
     [(Int n) (Int (fx- 0 n))]
-    [else (Prim '- (list r))]))
+    [(Prim '- (list ire)) ire]
+    [(Prim '+ (list (Int n) ire)) (Prim '- (list (Int (fx- 0 n)) ire))]
+    [(Prim '- (list ire (Int n))) (Prim '- (list (Int n) ire))]
+    [(Prim '- (list (Int n) ire)) (Prim '- (list ire (Int n)))]
+    [else (Prim '- (list ic))]))
 
-(define (pe-add r1 r2)
-  (match* (r1 r2)
-    [((Int n1) (Int n2)) (Int (fx+ n1 n2))]
-    [(_ _) (Prim '+ (list r1 r2))]))
+(define (pe-add ic1 ic2)
+  (match* (ic1 ic2)
+    [((Int n1) ic2) (match ic2
+                          [(Int n2) (Int (fx+ n1 n2))]
+                          [(Prim '- (list ire)) (Prim '- (list (Int n1) ire))]
+                          [(Prim '+ (list (Int n2) ire)) (Prim '+ (list (Int (fx+ n1 n2)) ire))]
+                          [(Prim '- (list (Int n2) ire)) (Prim '- (list (Int (fx+ n1 n2)) ire))]
+                          [(Prim '- (list ire (Int n2))) (Prim '+ (list (Int (fx- n1 n2)) ire))]
+                          [else (Prim '+ (list (Int n1) ic2))])]
+    [((Prim '- (list ire1)) ic2) (match ic2
+                          [(Int n1) (Prim '- (list (Int (fx- 0 n1)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '- (list (Prim '+ (list ire1 ire2))))]
+                          [(Prim '+ (list (Int n1) ire2)) (Prim '+ (list (Int n1) (Prim '- (list ire2 ire1))))]
+                          [(Prim '- (list (Int n1) ire2)) (Prim '- (list (Int n1) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n1))) (Prim '+ (list (Int (fx- 0 n1)) (Prim '- (list ire2 ire1))))]
+                          [else (Prim '- (list ic2 ire1))])]
+    [((Prim '+ (list (Int n1) ire1)) ic2) (match ic2
+                          [(Int n2) (Prim '+ (list (Int (fx+ n1 n2)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '+ (list (Int n1) (Prim '- (list ire1 ire2))))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '+ (list (Int (fx+ n1 n2)) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '+ (list (Int (fx+ n1 n2)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '+ (list (Int (fx- n1 n2)) (Prim '+ (list ire1 ire2))))]
+                          [else (Prim '+ (list (Int n1) (Prim '+ (list ire1 ic2))))])]
+    [((Prim '- (list (Int n1) ire1)) ic2) (match ic2
+                          [(Int n2) (Prim '- (list (Int (fx+ n1 n2)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '- (list (Int n1) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '+ (list (Int (fx+ n1 n2)) (Prim '- (list ire2 ire1))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '- (list (Int (fx+ n1 n2)) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '+ (list (Int (fx- n1 n2)) (Prim '- (list ire2 ire1))))]
+                          [else (Prim '+ (list (Int n1) (Prim '- (list ic2 ire1))))])]
+    [((Prim '- (list ire1 (Int n1))) ic2) (match ic2
+                          [(Int n2) (Prim '+ (list (Int (fx- n2 n1)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '+ (list (Int (fx- 0 n1)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '+ (list (Int (fx- n2 n1)) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '+ (list (Int (fx- n2 n1)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '- (list (Prim '+ (list ire1 ire2)) (Int (fx+ n1 n2))))]
+                          [else (Prim '- (list (Prim '+ (list ire1 ic2)) (Int n1)))])]
+    [(ire1 ic2) (match ic2
+                          [(Int n1) (Prim '+ (list (Int n1) ire1))]
+                          [(Prim '- (list ire2)) (Prim '- (list ire1 ire2))]
+                          [(Prim '+ (list (Int n1) ire2)) (Prim '+ (list (Int n1) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list (Int n1) ire2)) (Prim '+ (list (Int n1) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n1))) (Prim '- (list (Prim '+ (list ire1 ire2)) (Int n1)))]
+                          [else (Prim '+ (list ire1 ic2))])]))
 
+(define (pe-sub ic1 ic2)
+  (match* (ic1 ic2)
+    [((Int n1) ic2) (match ic2
+                          [(Int n2) (Int (fx- n1 n2))]
+                          [(Prim '- (list ire)) (Prim '+ (list (Int n1) ire))]
+                          [(Prim '+ (list (Int n2) ire)) (Prim '- (list (Int (fx- n1 n2)) ire))]
+                          [(Prim '- (list (Int n2) ire)) (Prim '+ (list (Int (fx- n1 n2)) ire))]
+                          [(Prim '- (list ire (Int n2))) (Prim '- (list (Int (fx+ n1 n2)) ire))]
+                          [else (Prim '- (list (Int n1) ic2))])]
+    [((Prim '- (list ire1)) ic2) (match ic2
+                          [(Int n1) (Prim '- (list (Int (fx- 0 n1)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '- (list ire2 ire1))]
+                          [(Prim '+ (list (Int n1) ire2)) (Prim '- (list (Int (fx- 0 n1)) (Prim '+ (list ire2 ire1))))]
+                          [(Prim '- (list (Int n1) ire2)) (Prim '- (list (Int (fx- 0 n1)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n1))) (Prim '- (list (Int n1) (Prim '+ (list ire2 ire1))))]
+                          [else (Prim '- (list (Prim '+ (list (ic2 ire1)))))])]
+    [((Prim '+ (list (Int n1) ire1)) ic2) (match ic2
+                          [(Int n2) (Prim '+ (list (Int (fx- n1 n2)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '+ (list (Int n1) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '+ (list (Int (fx- n1 n2)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '+ (list (Int (fx- n1 n2)) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '+ (list (Int (fx+ n1 n2)) (Prim '- (list ire1 ire2))))]
+                          [else (Prim '+ (list (Int n1) (Prim '- (list ire1 ic2))))])]
+    [((Prim '- (list (Int n1) ire1)) ic2) (match ic2
+                          [(Int n2) (Prim '- (list (Int (fx- n1 n2)) ire1))]
+                          [(Prim '- (list ire2)) (Prim '+ (list (Int n1) (Prim '- (list ire2 ire1))))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '- (list (Int (fx- n1 n2)) (Prim '+ (list ire2 ire1))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '- (list (Int (fx- n1 n2)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '- (list (Int (fx+ n1 n2)) (Prim '+ (list ire2 ire1))))]
+                          [else (Prim '- (list (Int n1) (Prim '+ (list ic2 ire1))))])]
+    [((Prim '- (list ire1 (Int n1))) ic2) (match ic2
+                          [(Int n2) (Prim '- (list ire1 (Int (fx+ n2 n1))))]
+                          [(Prim '- (list ire2)) (Prim '- (list (Prim '+ (list ire1 ire2)) (Int n1)))]
+                          [(Prim '+ (list (Int n2) ire2)) (Prim '- (list (Prim '- (list ire1 ire2)) (Int (fx+ n1 n2))))]
+                          [(Prim '- (list (Int n2) ire2)) (Prim '- (list (Prim '+ (list ire1 ire2)) (Int (fx+ n1 n2))))]
+                          [(Prim '- (list ire2 (Int n2))) (Prim '+ (list (Int (fx- n2 n1)) (Prim '- (list ire1 ire2))))]
+                          [else (Prim '+ (list (Int (fx- 0 n1)) (Prim '- (list ire1 ic2))))])]
+    [(ire1 ic2) (match ic2
+                          [(Int n1) (Prim '- (list ire1 (Int n1)))]
+                          [(Prim '- (list ire2)) (Prim '+ (list ire1 ire2))]
+                          [(Prim '+ (list (Int n1) ire2)) (Prim '+ (list (Int (fx- 0 n1)) (Prim '- (list ire1 ire2))))]
+                          [(Prim '- (list (Int n1) ire2)) (Prim '+ (list (Int (fx- 0 n1)) (Prim '+ (list ire1 ire2))))]
+                          [(Prim '- (list ire2 (Int n1))) (Prim '+ (list (Int n1) (Prim '- (list ire1 ire2))))]
+                          [else (Prim '- (list ire1 ic2))])]))
+
+;; Only returns (+ n x) or (- x n) or (- n x). neg -> sub.
 (define (pe-exp e)
   (match e
+    [(Var x) (Var x)]
     [(Int n) (Int n)]
     [(Prim 'read '()) (Prim 'read '())]
     [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
-    [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]))
+    [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
+    [(Prim '- (list e1 e2)) (pe-sub (pe-exp e1) (pe-exp e2))]
+    [(Let x exp body) (Let x (pe-exp exp) (pe-exp body))]))
+    
 
 (define (pe-Lint p)
   (match p
@@ -280,7 +374,8 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
-  `( ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+  `( ("partial evaluator" ,pe-Lint ,interp-Lvar ,type-check-Lvar)
+     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
