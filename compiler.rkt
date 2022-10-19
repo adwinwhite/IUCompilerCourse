@@ -137,7 +137,7 @@
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
   (match p
-    [(Program info e) (CProgram info (dict-set '() 'start  (explicate_tail e)))]))
+    [(Program info e) (CProgram info (dict-set '() (cp-label 'start)  (explicate_tail e)))]))
 
 (define (atm->args a)
   (match a
@@ -173,7 +173,7 @@
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
   (match p
-    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() 'start  (Block '() (tail->instrs tail))))]))
+    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() (cp-label label)  (Block '() (tail->instrs tail))))]))
 
 (define (type-size t) 
   (match t
@@ -186,7 +186,7 @@
 (define (stack-top locs) 
   (if (dict-empty? locs)
       0
-      (apply max (dict-values locs))))
+      (apply min (dict-values locs))))
 
 (define (arg-to-stack-loc info)
   (lambda (arg locs)
@@ -197,7 +197,7 @@
             (let*  ([top (stack-top locs)]
                     [locals-types (dict-ref info 'locals-types)]
                     [s (var-size x locals-types)]
-                    [new-top (+ top s)])
+                    [new-top (- top s)])
                         (cons (Deref 'rbp new-top) (dict-set locs x new-top))))]
       [else (cons arg locs)])))
 
@@ -220,7 +220,7 @@
                           (cons (append (car acc) (list (car instr-loc))) (cdr instr-loc))))
                         (cons '() '())
                         instrs)])
-        (let* ([top (stack-top (cdr frame))]
+        (let* ([top (- (stack-top (cdr frame)))]
                [remainder (modulo top 16)])
              (if (= 0 remainder)
                  (cons (car frame) top)
@@ -252,9 +252,29 @@
   (match p
     [(X86Program info (list (cons label (Block _ instrs)))) (X86Program info (list (cons label (Block '() (patch-instrs instrs)))))]))
 
+(define (cp-label label)
+  (match (system-type 'os)
+    ['macosx (string->symbol (string-append "_" (symbol->string label)))]
+    [else label]))
+
+(define (prelude info)
+  (list (Instr 'pushq (list (Reg 'rbp)))
+        (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+        (Instr 'subq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
+        (Jmp (cp-label 'start))))
+
+(define (conclusion info)
+  (list (Instr 'addq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
+        (Instr 'popq (list (Reg 'rbp)))
+        (Retq)))
+
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
-  (error "TODO: code goes here (prelude-and-conclusion)"))
+  (match p
+    [(X86Program info (list (cons start (Block _ instrs)))) 
+     (X86Program info (list (cons start (Block '() (patch-instrs instrs)))
+                            (cons (cp-label 'main) (Block '() (prelude info)))
+                            (cons (cp-label 'conclusion) (Block '() (conclusion info)))))]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
@@ -267,5 +287,5 @@
      ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
      ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
