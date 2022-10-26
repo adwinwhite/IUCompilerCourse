@@ -370,6 +370,97 @@
                             (cons (cp-label 'main) (Block '() (prelude info)))
                             (cons (cp-label 'conclusion) (Block '() (conclusion info)))))]))
 
+(define (filter-imm s)
+  (list->set (filter (lambda (e)
+                       (match e
+                         [(Imm _) #f]
+                         [else #t]))
+                     (set->list s))))
+
+(define (write-locs instr)
+  (let ([args (match instr
+                [(or (Instr 'subq (list arg1 arg2)) (Instr 'addq (list arg1 arg2)))
+                 (set arg2)]
+                [(Instr 'negq (list arg1))
+                 (set arg1)]
+                [(Instr 'movq (list arg1 arg2))
+                 (set arg2)]
+                [(Instr 'pushq (list arg1))
+                 (set)]
+                [(Instr 'popq (list arg1))
+                 (set arg1)]
+                [(Callq label arity)
+                 (set (Reg 'rax) (Reg 'rcx) (Reg 'rdx) (Reg 'rsi) (Reg 'rdi) (Reg 'r8) (Reg 'r9) (Reg 'r10) (Reg 'r11))]
+                [Retq
+                 (set)]
+                [(Jmp label)
+                 (set)])])
+    (filter-imm args)))
+
+
+    
+
+(define (read-locs instr)
+  (let ([args (match instr
+                [(or (Instr 'subq (list arg1 arg2)) (Instr 'addq (list arg1 arg2)))
+                 (set arg1 arg2)]
+                [(Instr 'negq (list arg1))
+                 (set arg1)]
+                [(Instr 'movq (list arg1 arg2))
+                 (set arg1)]
+                [(Instr 'pushq (list arg1))
+                 (set arg1)]
+                [(Instr 'popq (list arg1))
+                 (set)]
+                [(Callq label arity)
+                 (match arity
+                   [0 (set)]
+                   [1 (set (Reg 'rdi))]
+                   [2 (set (Reg 'rdi) (Reg 'rsi))]
+                   [3 (set (Reg 'rdi) (Reg 'rsi) (Reg 'rdx))]
+                   [4 (set (Reg 'rdi) (Reg 'rsi) (Reg 'rdx) (Reg 'rcx))]
+                   [5 (set (Reg 'rdi) (Reg 'rsi) (Reg 'rdx) (Reg 'rcx) (Reg 'r8))]
+                   [6 (set (Reg 'rdi) (Reg 'rsi) (Reg 'rdx) (Reg 'rcx) (Reg 'r8) (Reg 'r9))]
+                   [n (list->set (map (lambda (x)
+                                        Deref 'rbp (+ 16 (* 8 x)))
+                                      (stream->list (in-range (- n 6)))))])]
+                [Retq
+                 (set (Reg 'rax))]
+                [(Jmp label)
+                 (set)])])
+    (filter-imm args)))
+
+(define (uncover-instrs env)
+  (lambda (instrs)
+    (foldr (lambda (instr lvs)
+             (cons (set-union (if (empty? lvs)
+                                  (set)
+                                  (set-subtract (car lvs) (write-locs instr)))
+                              (read-locs instr))
+                   lvs))
+           (match (last instrs)
+             [(Jmp label)
+              (list (car ((uncover-instrs env) (match (dict-ref env label)
+                                           [(Block _ instrs)
+                                            instrs]))))]
+             [else '()])
+           instrs)))
+
+
+(define (uncover-block env)
+  (lambda (block)
+    (match block
+      [(Block info instrs)
+       (Block (dict-set info 'live-vars ((uncover-instrs env) instrs)) instrs)])))
+
+;; uncover-live : x86 -> x86
+(define (uncover-live p)
+  (match p
+    [(X86Program info blocks) 
+     (X86Program info (dict-map blocks (lambda (label block)
+                                (cons label ((uncover-block blocks) block)))))]))
+     
+
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
@@ -383,4 +474,5 @@
      ("assign homes" ,assign-homes ,interp-x86-0)
      ("patch instructions" ,patch-instructions ,interp-x86-0)
      ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ("uncover-live" ,uncover-live ,interp-x86-0)
      ))
