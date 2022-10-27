@@ -12,24 +12,6 @@
         pkgs = import nixpkgs {
           inherit system;
         };
-        # racket-ls = import
-            # ( pkgs.fetchFromGitHub
-                # {
-                    # owner = "jeapostrophe";
-                    # repo = "racket-langserver";
-                    # rev= "a1141f0871a55c036949d0bb0179fddbf86a97cd";
-                    # sha256= "uaXbvVPGIUyXWpHldD999DC8c2fWOHSC+1McIeCID34=";
-                # }
-            # );
-        # racket-format = import
-            # ( pkgs.fetchFromGitHub
-                # {
-                    # owner = "russellw";
-                    # repo = "racket-format";
-                    # rev= "b3deb07903371448476e3ce5da836e53cae59456";
-                    # sha256= "WWjGEakULII1V0A2RmZ6m8k07HVv3yjWeOrBspXoszE=";
-                # }
-            # );
       in
       with pkgs;
       {

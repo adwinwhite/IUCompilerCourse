@@ -1,4 +1,5 @@
 #lang racket
+(require graph)
 (require racket/set racket/stream)
 (require racket/fixnum)
 (require "interp-Lint.rkt")
@@ -433,9 +434,7 @@
 (define (uncover-instrs env)
   (lambda (instrs)
     (foldr (lambda (instr lvs)
-             (cons (set-union (if (empty? lvs)
-                                  (set)
-                                  (set-subtract (car lvs) (write-locs instr)))
+             (cons (set-union (set-subtract (car lvs) (write-locs instr))
                               (read-locs instr))
                    lvs))
            (match (last instrs)
@@ -443,7 +442,7 @@
               (list (car ((uncover-instrs env) (match (dict-ref env label)
                                            [(Block _ instrs)
                                             instrs]))))]
-             [else '()])
+             [else (list (set))])
            instrs)))
 
 
@@ -459,6 +458,57 @@
     [(X86Program info blocks) 
      (X86Program info (dict-map blocks (lambda (label block)
                                 (cons label ((uncover-block blocks) block)))))]))
+
+(define not-equal? (compose1 not equal?))
+
+(define (build-interference-block block init)
+  (match block
+    [(Block info instrs)
+     (foldl (lambda (instr lvs interf-graph)
+              (match instr
+                [(Instr 'movq (list s d))
+                 (let ([vs (filter (lambda (v)
+                                     (and (not-equal? v s) (not-equal? v d)))
+                                   (set->list lvs))])
+                       (begin
+                          (for ([v vs])
+                              (begin
+                                (when (not (has-vertex? interf-graph v))
+                                      (add-vertex! interf-graph v))
+                                (when (not (has-vertex? interf-graph d))
+                                      (add-vertex! interf-graph d))
+                                (add-edge! interf-graph v d)))
+                          interf-graph))]
+                [else (let ([ws (write-locs instr)])
+                        (begin
+                          (for ([d ws])
+                               (for ([v lvs])
+                                    (when (not-equal? v d)
+                                      (begin
+                                        (when (not (has-vertex? interf-graph v))
+                                              (add-vertex! interf-graph v))
+                                        (when (not (has-vertex? interf-graph d))
+                                              (add-vertex! interf-graph d))
+                                        (add-edge! interf-graph v d)))))
+                          interf-graph))]))
+            init
+            instrs
+            (list-tail (dict-ref info 'live-vars) 1))]))
+
+
+;; build-interference : x86 -> x86
+(define (build-interference p)
+  (match p
+     [(X86Program info blocks) 
+     (X86Program (let ([interf-graph 
+                                (foldl build-interference-block (apply undirected-graph (list '())) (map (lambda (label)
+                                                                                          (dict-ref blocks label))
+                                                                                        (list (cp-label 'main) (cp-label 'start) (cp-label 'conclusion))))])
+                    (begin
+                      (display (graphviz interf-graph))
+                      (dict-set info 'conflict interf-graph)))
+                 blocks)]))
+
      
 
 ;; Define the compiler passes to be used by interp-tests and the grader
@@ -475,4 +525,5 @@
      ("patch instructions" ,patch-instructions ,interp-x86-0)
      ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ("uncover-live" ,uncover-live ,interp-x86-0)
+     ("build interference" ,build-interference ,interp-x86-0)
      ))
