@@ -517,11 +517,14 @@
                        (match instr
                           [(Instr name (list (Deref 'rbp loc1) (Deref 'rbp loc2)))
                            (list (Instr 'movq (list (Deref 'rbp loc1) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref 'rbp loc2))))]
-                          [(Instr name args)
-                            (match args
-                              [(list (Imm n) ...)
-                                (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr name (list (Reg 'rax) (cdr args))))]
-                              [else (list (Instr name args))])]
+                          [(Instr name (list (Imm n) arg))
+                            (if (> n 65536)
+                             (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr name (list (Reg 'rax) arg)))
+                             (list instr))]
+                          [(Instr 'movq (list arg1 arg2))
+                           (if (equal? arg1 arg2)
+                             '()
+                             (list instr))]
                           [else (list instr)]))
                instrs)))
 
