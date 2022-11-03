@@ -494,21 +494,34 @@
       [(Instr name args) (Instr name (map (assign-arg colored) args))]
       [else instr])))
 
-(define (aligned-stack-size colored)
+(define (stack-size colored)
   (let ([num-on-stack (let ([num-color (apply max (dict-values colored))])
                         (if (> num-color 10)
                             (- num-color 10)
                             0))])
-    (* 8 (if (odd? num-on-stack)
-             (+ 1 num-on-stack)
-             num-on-stack))))
+    (* 8 num-on-stack)))
+
+(define callee-save-regs '(rsp rbp rbx r12 r13 r14 r15))
 
 
 ;; allocate-registers : pseudo-x86 -> pseudo-x86
 (define (allocate-registers p)
   (match p
     [(X86Program info (list (cons label (Block _ instrs)))) (let ([colored (color-graph (dict-ref info 'conflict))])
-                                                              (X86Program (dict-set info 'stack-space (aligned-stack-size colored))
+                                                              (X86Program (dict-set 
+                                                                           (dict-set info 'stack-space (stack-size colored))
+                                                                           'used-callee
+                                                                           (filter (lambda (r)
+                                                                                     (if (equal? (member r callee-save-regs) #f)
+                                                                                      #f
+                                                                                      #t))
+                                                                                   (map (lambda (num)
+                                                                                          (hash-ref num-reg num))
+                                                                                        (filter (lambda (num)
+                                                                                                  (if (and (not (negative? num)) (< num 11))
+                                                                                                    #t
+                                                                                                    #f))
+                                                                                                (dict-values colored)))))
                                                                           (list (cons label (Block '() (map (assign-homes-instr colored) instrs))))))]))
 
 
@@ -539,16 +552,31 @@
     ['macosx (string->symbol (string-append "_" (symbol->string label)))]
     [else label]))
 
+(define (aligned-rsp-offset info)
+  (let* ([variables-space (dict-ref info 'stack-space)]
+         [raw-stack-size (+ variables-space (* 8 (+ 2 (length (dict-ref info 'used-callee)))))])
+                                  (if (= (modulo raw-stack-size 16) 8)
+                                    (+ 8 variables-space)
+                                    variables-space)))
+
+
 (define (prelude info)
+  (append
   (list (Instr 'pushq (list (Reg 'rbp)))
         (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-        (Instr 'subq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
-        (Jmp (cp-label 'start))))
+        (Instr 'subq (list (Imm (aligned-rsp-offset info)) (Reg 'rsp))))
+    
+  (for/list ([reg (dict-ref info 'used-callee)])
+          (Instr 'pushq (list (Reg reg))))
+  (list (Jmp (cp-label 'start)))))
 
 (define (conclusion info)
-  (list (Instr 'addq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
+  (append
+  (for/list ([reg (reverse (dict-ref info 'used-callee))])
+            (Instr 'popq (list (Reg reg))))
+  (list (Instr 'addq (list (Imm (aligned-rsp-offset info)) (Reg 'rsp)))
         (Instr 'popq (list (Reg 'rbp)))
-        (Retq)))
+        (Retq))))
 
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
