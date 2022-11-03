@@ -459,9 +459,15 @@
       (for/list ([neighbor neighbors])
         (dict-set! saturations neighbor (cons color (dict-ref saturations neighbor))))))
 
+  (define (update-priority! queue handles v g)
+    (let ([neighbors (get-neighbors g v)])
+      (for/list ([neighbor neighbors])
+                (pqueue-decrease-key! queue (hash-ref handles v)))))
+
   (let* ([vertices (get-vertices g)]
         [colored (make-hash)]
         [pque (make-pqueue init-pqueue-cmp)]
+        [item-handles (make-hash)]
         [saturations (let ([d (make-hash)])
                        (begin 
                          (for/list ([v vertices])
@@ -470,11 +476,12 @@
 
     (begin
       (for/list ([v vertices])
-        (pqueue-push! pque v))
+        (hash-set! item-handles v (pqueue-push! pque v)))
       (while (not (= (pqueue-count pque) 0))
         (let ([v (pqueue-pop! pque)])
           (assign-reg! v colored (dict-ref saturations v))
-          (update-neighbors! v g saturations (dict-ref colored v))))
+          (update-neighbors! v g saturations (dict-ref colored v))
+          (update-priority! pque item-handles v g)))
       colored)))
 
 (define (num->mem n)
