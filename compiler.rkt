@@ -431,23 +431,10 @@
                           'move-relation move-graph)))
                  blocks)]))
 
+(define regs '(r15  r11  rbp  rsp  rax  rcx  rdx  rsi  rdi  r8   r9   r10  rbx  r12  r13  r14))
 
-(define reg-num #hash((rax . -1)
-                       (rsp . -2)
-                       (rbp . -3)
-                       (r11 . -4)
-                       (r15 . -5)
-                       (rcx . 0)
-                       (rdx . 1)
-                       (rsi . 2)
-                       (rdi . 3)
-                       (r8  . 4)
-                       (r9  . 5)
-                       (r10 . 6)
-                       (rbx . 7)
-                       (r12 . 8)
-                       (r13 . 9)
-                       (r14 . 10)))
+(define reg-num (apply hash (flatten (map cons regs (sequence->list (in-range -4 12))))))
+
 
 (define num-reg
   (for/hash ([(k v) reg-num])
@@ -539,9 +526,10 @@
       colored)))
 
 (define (num->mem n)
-  (if (< n 11)
-      (Reg (dict-ref num-reg n))
-      (Deref 'rbp (* -8 (- n 10))))) 
+  (let ([num-of-regs (+ (apply max (hash-values reg-num)) 1)])
+    (if (< n num-of-regs)
+        (Reg (dict-ref num-reg n))
+        (Deref 'rbp (* -8 (- n (- num-of-regs 1))))))) 
 
 (define (assign-arg colored)
   (lambda (arg)
