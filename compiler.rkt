@@ -229,7 +229,7 @@
     [(Var x) (Return (Var x))]
     [(Int n) (Return (Int n))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
-    [(Prim op es) (Return (Prim op es))]
+    [(Prim op atms) (Return (Prim op atms))]
     [else (error "explicate_tail unhandled case" e)]))
 
 ;; explicate-control : R1 -> C0
@@ -394,18 +394,41 @@
             instrs
             (list-tail (dict-ref info 'live-vars) 1))]))
 
+(define (build-move-graph instrs)
+  (foldl (lambda (instr g)
+           (match instr
+              [(Prim 'movq (list arg1 arg2)) 
+               (match (cons arg1 arg2)
+                  [(or (cons (Imm _) _) (cons _ (Imm _))) g]
+                  [else (begin
+                          (when (not (has-vertex? g arg1))
+                                (add-vertex! g arg1))
+                          (when (not (has-vertex? g arg2))
+                                (add-vertex! g arg2))
+                          (add-edge! g arg1 arg2)
+                          g)])]
+              [else g]))
+         (apply undirected-graph (list '()))
+         instrs))
+
+
 
 ;; build-interference : pseudo-x86 -> pseudo-x86
 (define (build-interference p)
   (match p
      [(X86Program info blocks) 
-     (X86Program (let ([interf-graph 
+     (X86Program (let ([move-graph (build-move-graph (match (dict-ref blocks (cp-label 'start))
+                                                        [(Block _ instrs) instrs]))]
+                       [interf-graph 
                                 (foldl build-interference-block (apply undirected-graph (list '())) (map (lambda (label)
                                                                                           (dict-ref blocks label))
                                                                                         (list (cp-label 'start))))])
                     (begin
                       (display (graphviz interf-graph))
-                      (dict-set info 'conflict interf-graph)))
+                      (dict-set 
+                        (dict-set info 
+                          'conflict interf-graph)
+                          'move-relation move-graph)))
                  blocks)]))
 
 
@@ -430,29 +453,45 @@
   (for/hash ([(k v) reg-num])
             (values v k)))
 
-(define (color-graph g)
-  (define (init-pqueue-cmp lhs rhs)
-    (match (cons lhs rhs)
-      [(cons (Reg _) _)
-       #t]
-      [(cons _ (Reg _))
-       #f]
-      [else #t]))
+(define (color-graph g move-graph)
 
-  (define (minimum-available-num saturation)
-    (let ([sorted (sort (filter (compose not negative?) saturation) <)])
-      (foldl (lambda (n minimum)
-               (if (< minimum n)
-                 minimum
-                 (+ n 1)))
-             0
-             sorted)))
+  (define (move-colors colored v)
+    (if (has-vertex? move-graph v)
+        (foldl (lambda (move-var colors)
+                 (if (dict-has-key? colored move-var)
+                     (cons (dict-ref colored move-var) colors)
+                     colors))
+               '()
+               (get-neighbors move-graph v))
+        '()))
+  
+  (define (available-move-colors saturations colored)
+    (lambda (v)
+      (filter (compose not negative?) (set->list (set-subtract 
+                                                (list->set (move-colors colored v))
+                                                (list->set (dict-ref saturations v)))))))
 
-  (define (assign-reg! v colored saturation)
-    (match v
-      [(Reg r) (dict-set! colored v (hash-ref reg-num r))]
-      [(Var name) (dict-set! colored v (minimum-available-num saturation))]
-      [else (error "Unhandled locations")]))
+  (define (pick-best-color saturations colored)
+    (lambda (v)
+      (let ([my-move-colors ((available-move-colors saturations colored) v)])
+            (if (null? my-move-colors)
+                (let ([sorted (sort (filter (compose not negative?) (dict-ref saturations v)) <)])
+                  (foldl (lambda (n minimum)
+                           (cond 
+                             [(< minimum n) minimum]
+                             [(= minimum n) (+ n 1)]
+                             [(> minimum n) minimum]
+                             ))
+                         0
+                         sorted))
+                (min my-move-colors)))))
+
+  (define (assign-color! saturations)
+    (lambda (colored v)
+      (match v
+        [(Reg r) (dict-set! colored v (hash-ref reg-num r))]
+        [(Var name) (dict-set! colored v ((pick-best-color saturations colored) v))]
+        [else (error "Unhandled locations")])))
 
   (define (update-neighbors! v g saturations color)
     (let ([neighbors (get-neighbors g v)])
@@ -466,20 +505,35 @@
 
   (let* ([vertices (get-vertices g)]
         [colored (make-hash)]
-        [pque (make-pqueue init-pqueue-cmp)]
-        [item-handles (make-hash)]
         [saturations (let ([d (make-hash)])
                        (begin 
                          (for/list ([v vertices])
                              (dict-set! d v '()))
-                         d))])
+                         d))]
+        [pque (make-pqueue (lambda (lhs rhs)
+                              (match (cons lhs rhs)
+                                [(cons (Reg _) _)
+                                 #t]
+                                [(cons _ (Reg _))
+                                 #f]
+                                [else (let ([lhs-satu-len (length (dict-ref saturations lhs))]
+                                            [rhs-satu-len (length (dict-ref saturations rhs))])
+                                        (cond
+                                          [(> lhs-satu-len rhs-satu-len) #t]
+                                          [(< lhs-satu-len rhs-satu-len) #f]
+                                          [(= lhs-satu-len rhs-satu-len) (if (null? ((available-move-colors saturations colored) rhs))
+                                                                             #t
+                                                                             #f)]))])))
+              ]
+        [item-handles (make-hash)]
+        )
 
     (begin
       (for/list ([v vertices])
         (hash-set! item-handles v (pqueue-push! pque v)))
       (while (not (= (pqueue-count pque) 0))
         (let ([v (pqueue-pop! pque)])
-          (assign-reg! v colored (dict-ref saturations v))
+          ((assign-color! saturations) colored v)
           (update-neighbors! v g saturations (dict-ref colored v))
           (update-priority! pque item-handles v g)))
       colored)))
@@ -514,22 +568,23 @@
 ;; allocate-registers : pseudo-x86 -> pseudo-x86
 (define (allocate-registers p)
   (match p
-    [(X86Program info (list (cons label (Block _ instrs)))) (let ([colored (color-graph (dict-ref info 'conflict))])
-                                                              (X86Program (dict-set 
-                                                                           (dict-set info 'stack-space (stack-size colored))
-                                                                           'used-callee
-                                                                           (filter (lambda (r)
-                                                                                     (if (equal? (member r callee-save-regs) #f)
-                                                                                      #f
-                                                                                      #t))
-                                                                                   (map (lambda (num)
-                                                                                          (hash-ref num-reg num))
-                                                                                        (filter (lambda (num)
-                                                                                                  (if (and (not (negative? num)) (< num 11))
-                                                                                                    #t
-                                                                                                    #f))
-                                                                                                (dict-values colored)))))
-                                                                          (list (cons label (Block '() (map (assign-homes-instr colored) instrs))))))]))
+    [(X86Program info (list (cons label (Block _ instrs)))) 
+     (let ([colored (color-graph (dict-ref info 'conflict) (dict-ref info 'move-relation))])
+      (X86Program (dict-set 
+                   (dict-set info 'stack-space (stack-size colored))
+                   'used-callee
+                   (filter (lambda (r)
+                             (if (equal? (member r callee-save-regs) #f)
+                              #f
+                              #t))
+                           (map (lambda (num)
+                                  (hash-ref num-reg num))
+                                (filter (lambda (num)
+                                          (if (and (not (negative? num)) (< num 11))
+                                            #t
+                                            #f))
+                                        (dict-values colored)))))
+                  (list (cons label (Block '() (map (assign-homes-instr colored) instrs))))))]))
 
 
 (define (patch-instrs instrs)
