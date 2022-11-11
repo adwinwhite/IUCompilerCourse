@@ -2,12 +2,11 @@
 (require graph)
 (require racket/set racket/stream)
 (require racket/fixnum)
-; (require "interp-Lint.rkt")
-(require "interp-Lvar.rkt")
-(require "interp-Cvar.rkt")
+(require "interp-Lif.rkt")
+(require "interp-Cif.rkt")
 (require "interp.rkt")
-(require "type-check-Lvar.rkt")
-(require "type-check-Cvar.rkt")
+(require "type-check-Lif.rkt")
+(require "type-check-Cif.rkt")
 (require "utilities.rkt")
 (require "priority_queue.rkt")
 (provide (all-defined-out))
@@ -140,12 +139,27 @@
     [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
     [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
     [(Prim '- (list e1 e2)) (pe-sub (pe-exp e1) (pe-exp e2))]
-    [(Let x exp body) (Let x (pe-exp exp) (pe-exp body))]))
+    [(Let x exp body) (Let x (pe-exp exp) (pe-exp body))]
+    [else e]))
     
 
 (define (pe-Lint p)
   (match p
     [(Program info e) (Program info (pe-exp e))]))
+
+(define (shrink-logical e)
+  (match e
+    [(Prim 'and (list e1 e2)) (If (shrink-logical e1) (shrink-logical e2) (Bool #f))]
+    [(Prim 'or (list e1 e2)) (If (shrink-logical e1) (Bool #t) (shrink-logical e2))]
+    [(Prim op es) (Prim op (map shrink-logical es))]
+    [(Let x exp body) (Let x (shrink-logical exp) (shrink-logical body))]
+    [(If cnd thn els) (If (shrink-logical cnd) (shrink-logical thn) (shrink-logical els))]
+    [else e]))
+
+
+(define (shrink p)
+  (match p
+    [(Program info e) (Program info (shrink-logical e))]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
@@ -169,12 +183,15 @@
       [(Var x)
        (Var (dict-ref env x))]
       [(Int n) (Int n)]
+      [(Bool b) (Bool b)]
       [(Let x e body)
        (let* ([unique-name ((uniquify-name env) x)]
               [new-env (dict-set env x unique-name)])
          (Let unique-name ((uniquify-exp new-env) e) ((uniquify-exp new-env) body)))]
       [(Prim op es)
-       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
+       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))]
+      [(If cnd thn els)
+       (If ((uniquify-exp env) cnd) ((uniquify-exp env) thn) ((uniquify-exp env) els))])))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
@@ -185,15 +202,12 @@
 (define remove-complex-opera-exp
   (lambda (e)
     (match e
-      [(Var x)
-       (Var x)]
-      [(Int n) (Int n)]
       [(Let x e body)
        (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
-      [(Prim '- (list e))
+      [(Prim op (list e))
         (if (atm? e) 
-          (Prim '- (list e))
-          (Let 'tmp (remove-complex-opera-exp e) (Prim '- (list (Var 'tmp)))))]
+          (Prim op (list e))
+          (Let 'tmp (remove-complex-opera-exp e) (Prim op (list (Var 'tmp)))))]
       [(Prim op (list e1 e2))
         (match (cons (atm? e1) (atm? e2))
           [(cons #t #t)
@@ -206,8 +220,8 @@
             (Let 'tmp1 (remove-complex-opera-exp e1) (
               Let 'tmp2 (remove-complex-opera-exp e2) (
                 Prim op (list (Var 'tmp1) (Var 'tmp2)))))])]
-      [(Prim 'read '())
-       (Prim 'read '())])))
+      [(If cnd thn els) (If (remove-complex-opera-exp cnd) (remove-complex-opera-exp thn) (remove-complex-opera-exp els))]
+      [else e])))
 
 
 
@@ -216,26 +230,72 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) (remove-complex-opera-exp e)))]))
 
-(define (explicate_assign e x cont)
-  (match e
-    [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
-    [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
-    [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
-    [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
-    [else (error "explicate_assign unhandled case" e)]))
+(define (explicate_assign blocks)
+  (lambda (e x cont)
+    (match e
+      [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
+      [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
+      [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
+      [(Let y rhs body) ((explicate_assign blocks) rhs y ((explicate_assign blocks) body x cont))]
+      [(If cnd thn els) ((explicate_pred blocks) cnd ((explicate_assign blocks) thn x cont) ((explicate_assign blocks) els x cont))]
+      [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+      [else (error "explicate_assign unhandled case" e)])))
 
-(define (explicate_tail e)
-  (match e
-    [(Var x) (Return (Var x))]
-    [(Int n) (Return (Int n))]
-    [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
-    [(Prim op atms) (Return (Prim op atms))]
-    [else (error "explicate_tail unhandled case" e)]))
+(define (explicate_tail blocks)
+  (lambda (e)
+    (match e
+      [(Var x) (Return (Var x))]
+      [(Int n) (Return (Int n))]
+      [(Bool b) (Return (Bool b))]
+      [(Let x rhs body) ((explicate_assign blocks) rhs x ((explicate_tail blocks) body))]
+      [(If cnd thn els) ((explicate_pred blocks) cnd ((explicate_tail blocks) thn) ((explicate_tail blocks) els))]
+      [(Prim op atms) (Return (Prim op atms))]
+      [else (error "explicate_tail unhandled case" e)])))
+
+(define (create_block blocks) 
+  (lambda (tail)
+    (match tail
+      [(Goto label) (Goto label)]
+      [else
+        (let ([label (gensym 'block)])
+          (dict-set! blocks label tail)
+          (Goto label))])))
+
+(define cmp-op '(eq? < <= > >=))
+
+;; (exp-bool, tail, tail) -> tail
+(define (explicate_pred blocks)
+  (lambda (cnd thn els)
+    (match cnd
+      [(Var x) 
+        (IfStmt (Prim 'eq? (list (Var x) (Bool #t)))
+                ((create_block blocks) thn)
+                ((create_block blocks) els))]
+      [(Let x rhs body) 
+        ((explicate_assign blocks) rhs x ((explicate_pred blocks) body thn els))]
+      [(Prim 'not (list e))
+        ((explicate_pred blocks) e els thn)]
+      [(Prim op es) #:when (member op cmp-op)
+        (IfStmt (Prim op es) 
+        ((create_block blocks) thn)
+        ((create_block blocks) els))]
+      [(Bool b) (if b thn els)]
+      [(If cnd-inn thn-inn els-inn) 
+        (let ([outer-thn ((create_block blocks) thn)]
+              [outer-els ((create_block blocks) els)])
+          ((explicate_pred blocks) cnd-inn
+                          ((explicate_pred blocks) thn-inn outer-thn outer-els)
+                          ((explicate_pred blocks) els-inn outer-thn outer-els)))]
+      [else (error "explicate_pred unhandled case" cnd)])))
 
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
   (match p
-    [(Program info e) (CProgram info (dict-set '() (cp-label 'start)  (explicate_tail e)))]))
+    [(Program info e) (CProgram info (let ([basic-blocks (make-hash)])
+                                       (begin
+                                         (dict-set! basic-blocks (cp-label 'start) ((explicate_tail basic-blocks) e))
+                                         (print basic-blocks)
+                                         basic-blocks)))]))
 
 (define (atm->args a)
   (match a
@@ -642,16 +702,19 @@
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
-(define compiler-passes
-  `( ("partial evaluator" ,pe-Lint ,interp-Lvar ,type-check-Lvar)
-     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
-     ;; Uncomment the following passes as you finish them.
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-     ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-     ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
-     ("uncover live" ,uncover-live ,interp-pseudo-x86-0)
-     ("build interference" ,build-interference ,interp-pseudo-x86-0)
-     ("allocate registers" ,allocate-registers ,interp-x86-0)
-     ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+(define compiler-passes 
+  `( ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
+  ; `( ("partial evaluator" ,pe-Lint ,interp-Lif ,type-check-Lif)
+     ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
+     ; ;; Uncomment the following passes as you finish them.
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
+     ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
+     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
+     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-0)
+     ; ("build interference" ,build-interference ,interp-pseudo-x86-0)
+     ; ("allocate registers" ,allocate-registers ,interp-x86-0)
+     ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ; ))
      ))
+

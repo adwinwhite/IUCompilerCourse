@@ -54,7 +54,7 @@
       (cond [(dict-has-key? env x)
              (define old-t (dict-ref env x))
              (unless (type-equal? t old-t)
-               (error 'update-type "old type ~a and new type ~ are inconsistent"
+               (error 'update-type "old type ~a and new type ~a are inconsistent"
                       old-t t))
              (define new-t (combine-types old-t t))
              (cond [(not (equal? new-t old-t))
