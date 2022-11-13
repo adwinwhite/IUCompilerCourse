@@ -2,6 +2,7 @@
 (require graph)
 (require racket/set racket/stream)
 (require racket/fixnum)
+(require "multigraph.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Cif.rkt")
 (require "interp.rkt")
@@ -261,7 +262,20 @@
           (dict-set! blocks label tail)
           (Goto label))])))
 
+
 (define cmp-op '(eq? < <= > >=))
+
+(define cmp-set '(sete setl setle setg setge))
+
+(define cmp-cc '(e l le g ge))
+
+(define cmp-jmp '(je jl jle jg jge))
+
+(define cmp-op-set (map cons cmp-op cmp-set))
+
+(define cmp-op-jmp (map cons cmp-op cmp-jmp))
+
+(define cmp-op-cc (map cons cmp-op cmp-cc))
 
 ;; (exp-bool, tail, tail) -> tail
 (define (explicate_pred blocks)
@@ -294,44 +308,63 @@
     [(Program info e) (CProgram info (let ([basic-blocks (make-hash)])
                                        (begin
                                          (dict-set! basic-blocks (cp-label 'start) ((explicate_tail basic-blocks) e))
-                                         (print basic-blocks)
                                          basic-blocks)))]))
 
 (define (atm->args a)
   (match a
     [(Var x) (Var x)]
     [(Int n) (Imm n)]
+    [(Bool b) (if b (Imm 1) (Imm 0))]
     [else (error "not atm" a)]))
-
-(define (assign-arg->instrs arg exp)
-  (match exp
-    [(? atm?) (list (Instr 'movq (list (atm->args exp) arg)))]
-    [(Prim 'read '()) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) arg)))]
-    [(Prim '- (list e)) (list (Instr 'movq (list (atm->args e) arg)) (Instr 'negq (list arg)))]
-    [(Prim '+ (list e1 e2)) (list (Instr 'movq (list (atm->args e1) arg)) (Instr 'addq (list (atm->args e2) arg)))]
-    [(Prim '- (list e1 e2)) (list (Instr 'movq (list (atm->args e1) arg)) (Instr 'subq (list (atm->args e2) arg)))]
-    [else (error "invalid expression in assignment statement" exp)]))
-
-
 
 (define (stmt->instrs s)
   (match s
-    [(Assign x exp) (let ([arg (atm->args x)]) (assign-arg->instrs arg exp))]
+    [(Assign x exp) (match exp
+                      [(? atm?) (list (Instr 'movq (list (atm->args exp) x)))]
+                      [(Prim 'read '()) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
+                      [(Prim '- (list e)) (if (equal? e x)
+                                            (list (Instr 'negq (list x)))
+                                            (list (Instr 'movq (list (atm->args e) x)) (Instr 'negq (list x))))]
+                      [(Prim '+ (list e1 e2)) (cond
+                                                [(equal? e1 x)
+                                                 (list (Instr 'addq (list (atm->args e2) x)))]
+                                                [(equal? e2 x)
+                                                 (list (Instr 'addq (list (atm->args e1) x)))]
+                                                [else
+                                                 (list (Instr 'movq (list (atm->args e1) x)) (Instr 'addq (list (atm->args e2) x)))])]
+                      [(Prim '- (list e1 e2)) (if (equal? e1 x)
+                                                (list (Instr 'subq (list (atm->args e2) x)))
+                                                (list (Instr 'movq (list (atm->args e1) x)) (Instr 'subq (list (atm->args e2) x))))]
+                      [(Prim 'not (list e)) (if (equal? e x)
+                                              (list (Instr 'xorq (list (Imm 1) x)))
+                                              (list (Instr 'movq (list (atm->args e) x)) (Instr 'xorq (list (Imm 1) x))))]
+                      [(Prim op (list e1 e2)) #:when (member op cmp-op)
+                                              (list (Instr 'cmpq (list (atm->args e2) (atm->args e1)))
+                                                    (Instr 'set (list (dict-ref cmp-op-cc op) (ByteReg 'al)))
+                                                    (Instr 'movzbq (list (ByteReg 'al) x)))]
+                      [else (error "unhandled expression in assignment statement" exp)])]
     [else (error "stmt->instrs unhandled statements" s)]))
-  
-
-(define (ret->instrs e)
-  (append (assign-arg->instrs (Reg 'rax) e) (list (Jmp 'conclusion))))
 
 (define (tail->instrs t)
   (match t
+    [(Return e) (append
+                  (stmt->instrs (Assign (Reg 'rax) e))
+                  (list (Jmp 'conclusion)))]
+    [(Goto label) (list (Jmp label))]
+    [(IfStmt (Prim op (list e1 e2)) (Goto label1) (Goto label2)) 
+             (list
+               (Instr 'cmpq (list (atm->args e2) (atm->args e1)))
+               (JmpIf (dict-ref cmp-op-cc op) label1)
+               (Jmp label2))]
     [(Seq fst snd) (append (stmt->instrs fst) (tail->instrs snd))]
-    [(Return e) (append (ret->instrs e) '())]))
+    ))
 
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
   (match p
-    [(CProgram info (list (cons label tail))) (X86Program info (dict-set '() (cp-label label)  (Block '() (tail->instrs tail))))]))
+    [(CProgram info blocks) 
+     (X86Program info (dict-map/copy blocks (lambda (label tail)
+                                              (values label (Block '() (tail->instrs tail))))))]))
 
 (define (filter-imm s)
   (list->set (filter (lambda (e)
@@ -342,13 +375,13 @@
 
 (define (write-locs instr)
   (let ([args (match instr
-                [(or (Instr 'subq (list arg1 arg2)) (Instr 'addq (list arg1 arg2)))
+                [(Instr op (list arg1 arg2)) #:when (member op '(subq addq xorq movq movzbq set))
                  (set arg2)]
                 [(Instr 'negq (list arg1))
                  (set arg1)]
-                [(Instr 'movq (list arg1 arg2))
-                 (set arg2)]
                 [(Instr 'pushq (list arg1))
+                 (set)]
+                [(Instr 'cmpq (list arg1 arg2))
                  (set)]
                 [(Instr 'popq (list arg1))
                  (set arg1)]
@@ -356,24 +389,29 @@
                  (set (Reg 'rax) (Reg 'rcx) (Reg 'rdx) (Reg 'rsi) (Reg 'rdi) (Reg 'r8) (Reg 'r9) (Reg 'r10) (Reg 'r11))]
                 [Retq
                  (set)]
-                [(Jmp label)
-                 (set)])])
+                [(or (Jmp label) (JmpIf _ label))
+                 (set)]
+                )])
     (filter-imm args)))
 
 
     
 
-(define (read-locs instr)
+(define ((read-locs env) instr)
   (let ([args (match instr
-                [(or (Instr 'subq (list arg1 arg2)) (Instr 'addq (list arg1 arg2)))
+                [(Instr op (list arg1 arg2)) #:when (member op '(subq addq xorq cmpq)) 
                  (set arg1 arg2)]
                 [(Instr 'negq (list arg1))
                  (set arg1)]
                 [(Instr 'movq (list arg1 arg2))
                  (set arg1)]
+                [(Instr 'movzbq (list arg1 arg2))
+                 (set (Reg (byte-reg->full-reg (ByteReg-name arg1))))]
                 [(Instr 'pushq (list arg1))
                  (set arg1)]
                 [(Instr 'popq (list arg1))
+                 (set)]
+                [(Instr 'set (list cc arg1))
                  (set)]
                 [(Callq label arity)
                  (match arity
@@ -389,34 +427,72 @@
                                       (stream->list (in-range (- n 6)))))])]
                 [Retq
                  (set (Reg 'rax))]
-                [(Jmp label)
-                 (set)])])
+                [(or (Jmp label) (JmpIf _ label))
+                 (car (dict-ref env label))]
+                )])
     (filter-imm args)))
 
 
 
-(define (uncover-start instrs)
+(define ((uncover-instrs env) instrs)
   (foldr (lambda (instr lvs)
            (cons (set-union (set-subtract (car lvs) (write-locs instr))
-                            (read-locs instr))
+                            ((read-locs env) instr))
                  lvs))
-         (match (last instrs)
-           [(Jmp 'conclusion)
-            (list (set (Reg 'rax) (Reg 'rsp)))]
-           [else (list (set))])
+         (list (set))
          instrs))
 
-
-(define (uncover-start-block block)
+(define ((uncover-block env) block)
   (match block
     [(Block info instrs)
-     (Block (dict-set info 'live-vars (uncover-start instrs)) instrs)]))
+     (Block (dict-set info 'live-vars ((uncover-instrs env) instrs)) instrs)]))
+
+(define (live-vars-in-block block)
+  (match block
+    [(Block info _)
+     (dict-ref info 'live-vars)]))
+
+;; blocks -> directed graph of label
+(define (build-control-flow blocks)
+  (let ([cfg (make-multigraph '())])
+    (begin 
+      (for ([(label block) (in-dict blocks)])
+         (match block
+            [(Block info instrs)
+             (begin
+               (match (last instrs)
+                [(Jmp next-label) #:when (not (equal? next-label 'conclusion))
+                 (add-directed-edge! cfg label next-label)]
+                [else void])
+               (let ([len-of-block (length instrs)])
+                   (match (list-ref instrs (- len-of-block 2))
+                      [(JmpIf _ next-label) #:when (not (equal? next-label 'conclusion))
+                       (add-directed-edge! cfg label next-label)]
+                      [else void]
+                      )))]))
+      cfg)))
+
+(define (sort-uncover-blocks blocks)
+  (let ([cfg (build-control-flow blocks)])
+    (if (null? (get-vertices cfg))
+      (dict-keys blocks)
+      (tsort (transpose cfg)))))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
 (define (uncover-live p)
   (match p
     [(X86Program info blocks) 
-     (X86Program info (dict-set blocks (cp-label 'start) (uncover-start-block (dict-ref blocks (cp-label 'start)))))]))
+     (X86Program info (let ([ordered-labels (sort-uncover-blocks blocks)]
+                            [label-lives (make-hash)])
+                        (cdr (foldl (lambda (label result)
+                                       (let* ([label-lives (car result)]
+                                             [uncovered-blocks (cdr result)]
+                                             [uncovered-block ((uncover-block label-lives) (dict-ref blocks label))])
+                                         (cons (dict-set label-lives label (live-vars-in-block uncovered-block))
+                                               (dict-set uncovered-blocks label uncovered-block))))
+                                    (cons (dict-set '() 'conclusion (list (set (Reg 'rax) (Reg 'rsp))))
+                                           '())
+                                    ordered-labels))))]))
 
 (define not-equal? (compose1 not equal?))
 
@@ -432,10 +508,6 @@
                        (begin
                           (for ([v vs])
                               (begin
-                                (when (not (has-vertex? interf-graph v))
-                                      (add-vertex! interf-graph v))
-                                (when (not (has-vertex? interf-graph d))
-                                      (add-vertex! interf-graph d))
                                 (add-edge! interf-graph v d)))
                           interf-graph))]
                 [else (let ([ws (write-locs instr)])
@@ -444,10 +516,6 @@
                                (for ([v lvs])
                                     (when (not-equal? v d)
                                       (begin
-                                        (when (not (has-vertex? interf-graph v))
-                                              (add-vertex! interf-graph v))
-                                        (when (not (has-vertex? interf-graph d))
-                                              (add-vertex! interf-graph d))
                                         (add-edge! interf-graph v d)))))
                           interf-graph))]))
             init
@@ -461,10 +529,6 @@
                (match (cons arg1 arg2)
                   [(or (cons (Imm _) _) (cons _ (Imm _))) g]
                   [else (begin
-                          (when (not (has-vertex? g arg1))
-                                (add-vertex! g arg1))
-                          (when (not (has-vertex? g arg2))
-                                (add-vertex! g arg2))
                           (add-edge! g arg1 arg2)
                           g)])]
               [else g]))
@@ -709,8 +773,8 @@
      ; ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
      ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
-     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-0)
-     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-0)
+     ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
+     ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
      ; ("build interference" ,build-interference ,interp-pseudo-x86-0)
      ; ("allocate registers" ,allocate-registers ,interp-x86-0)
      ; ("patch instructions" ,patch-instructions ,interp-x86-0)

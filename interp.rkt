@@ -262,7 +262,9 @@
         (define result
 	(match ast
 	   [(or (Var x) (Reg x))
-	    (lookup (get-name ast) env)]
+	    (begin 
+              (print env)
+              (lookup (get-name ast) env))]
 	   [(Deref r n)
 	    (lookup (get-name ast) env)]
 	   [(Imm n) n]
