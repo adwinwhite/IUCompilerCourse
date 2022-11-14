@@ -485,27 +485,28 @@
                       )))]))
       cfg)))
 
-(define (sort-uncover-blocks blocks)
-  (let ([cfg (build-control-flow blocks)])
-    (if (null? (get-vertices cfg))
-      (dict-keys blocks)
-      (tsort (transpose cfg)))))
+(define (sort-uncover-blocks cfg)
+  (if (null? (get-vertices cfg))
+    (list (cp-label 'start))
+    (tsort (transpose cfg))))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
 (define (uncover-live p)
   (match p
     [(X86Program info blocks) 
-     (X86Program info (let ([ordered-labels (sort-uncover-blocks blocks)]
-                            [label-lives (make-hash)])
-                        (cdr (foldl (lambda (label result)
-                                       (let* ([label-lives (car result)]
-                                             [uncovered-blocks (cdr result)]
-                                             [uncovered-block ((uncover-block label-lives) (dict-ref blocks label))])
-                                         (cons (dict-set label-lives label (live-vars-in-block uncovered-block))
-                                               (dict-set uncovered-blocks label uncovered-block))))
-                                    (cons (dict-set '() 'conclusion (list (set (Reg 'rax) (Reg 'rsp))))
-                                           '())
-                                    ordered-labels))))]))
+     (let ([cfg (build-control-flow blocks)])
+       (X86Program (dict-set info 'control-flow-graph cfg)
+                  (let ([ordered-labels (sort-uncover-blocks cfg)]
+                        [label-lives (make-hash)])
+                          (cdr (foldl (lambda (label result)
+                                         (let* ([label-lives (car result)]
+                                               [uncovered-blocks (cdr result)]
+                                               [uncovered-block ((uncover-block label-lives) (dict-ref blocks label))])
+                                           (cons (dict-set label-lives label (live-vars-in-block uncovered-block))
+                                                 (dict-set uncovered-blocks label uncovered-block))))
+                                      (cons (dict-set '() 'conclusion (list (set (Reg 'rax) (Reg 'rsp))))
+                                             '())
+                                      ordered-labels)))))]))
 
 (define not-equal? (compose1 not equal?))
 
@@ -733,6 +734,39 @@
                                                                   [else #t]))
                                                               (map (assign-homes-instr colored) (Block-instr* block)))))))))]))
 
+(define (block-has-only-prev? cfg label)
+  (eq? (length (get-neighbors (transpose cfg) label)) 1))
+
+(define ((merge-subsequent-block blocks cfg) label)
+  (let* ([block (dict-ref blocks label)]
+         [instrs (Block-instr* block)])
+    (match (last instrs)
+      [(Jmp next-label)
+        (if (and (not (equal? next-label 'conclusion)) (block-has-only-prev? cfg next-label))
+          (let* ([merged-instrs (append (take instrs (- (length instrs) 1))
+                                       (Block-instr* (dict-ref blocks next-label)))]
+                 [merged-block (Block '() merged-instrs)])
+            (dict-remove 
+              (dict-set blocks label merged-block)
+              next-label))
+          blocks)]
+      [else (error "unhandled cases" (last instrs))])))
+         
+
+;; remove-jumps : pseudo-x86 -> pseudo-x86
+(define (remove-jumps p)
+  (match p
+    [(X86Program info blocks) 
+     (let ([cfg (dict-ref info 'control-flow-graph)]
+           [labels (dict-keys blocks)])
+       (X86Program info
+         (foldl (lambda (label merged-blocks)
+                  (if (dict-has-key? merged-blocks label)
+                    ((merge-subsequent-block merged-blocks cfg) label)
+                    merged-blocks))
+                blocks
+                labels)))]))
+
 
 (define (patch-instrs instrs)
   (apply append (map (lambda (instr)
@@ -823,6 +857,7 @@
      ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
      ("build interference" ,build-interference ,interp-pseudo-x86-1)
      ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
+     ("remove jumps" ,remove-jumps , interp-pseudo-x86-1)
      ("patch instructions" ,patch-instructions ,interp-x86-1)
      ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ; ))
