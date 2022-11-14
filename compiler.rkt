@@ -727,10 +727,18 @@
   (apply append (map (lambda (instr)
                        (match instr
                           [(Instr name (list (Deref 'rbp loc1) (Deref 'rbp loc2)))
-                           (list (Instr 'movq (list (Deref 'rbp loc1) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref 'rbp loc2))))]
+                           (list (Instr 'movq (list (Deref 'rbp loc1) (Reg 'rax))) 
+                                 (Instr name (list (Reg 'rax) (Deref 'rbp loc2))))]
+                          [(Instr 'cmpq (list arg (Imm n)))
+                           (list (Instr 'movq (list (Imm n) (Reg 'rax)))
+                                 (Instr 'cmpq (list arg (Reg 'rax))))]
+                          [(Instr 'movzbq (list byte-reg (Var x)))
+                           (list (Instr 'movzbq (list byte-reg (Reg 'rax)))
+                                 (Instr 'movq (list (Reg 'rax) (Var x))))]
                           [(Instr name (list (Imm n) arg))
                             (if (> n 65536)
-                             (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr name (list (Reg 'rax) arg)))
+                             (list (Instr 'movq (list (Imm n) (Reg 'rax))) 
+                                   (Instr name (list (Reg 'rax) arg)))
                              (list instr))]
                           [(Instr 'movq (list arg1 arg2))
                            (if (equal? arg1 arg2)
@@ -743,7 +751,10 @@
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
   (match p
-    [(X86Program info (list (cons label (Block _ instrs)))) (X86Program info (list (cons label (Block '() (patch-instrs instrs)))))]))
+    [(X86Program info blocks) (X86Program info (dict-map/copy blocks
+                                                              (lambda (label block)
+                                                                (values label
+                                                                        (Block '() (patch-instrs (Block-instr* block)))))))]))
 
 (define (cp-label label)
   (match (system-type 'os)
@@ -801,7 +812,7 @@
      ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
      ("build interference" ,build-interference ,interp-pseudo-x86-1)
      ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
-     ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-1)
      ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ; ))
      ))
