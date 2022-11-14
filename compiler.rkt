@@ -231,36 +231,45 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) (remove-complex-opera-exp e)))]))
 
+;; Only e and cont are delayed.
 (define (explicate_assign blocks)
   (lambda (e x cont)
-    (match e
-      [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
-      [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
-      [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
-      [(Let y rhs body) ((explicate_assign blocks) rhs y ((explicate_assign blocks) body x cont))]
-      [(If cnd thn els) ((explicate_pred blocks) cnd ((explicate_assign blocks) thn x cont) ((explicate_assign blocks) els x cont))]
-      [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
-      [else (error "explicate_assign unhandled case" e)])))
+    (lazy 
+      (define forced-e (force e))
+      (match forced-e
+        [(Var y) (Seq (Assign (Var x) (Var y)) (force cont))]
+        [(Int n) (Seq (Assign (Var x) (Int n)) (force cont))]
+        [(Bool b) (Seq (Assign (Var x) (Bool b)) (force cont))]
+        [(Let y rhs body) ((explicate_assign blocks) (delay rhs) y ((explicate_assign blocks) (delay body) x cont))]
+        [(If cnd thn els) ((explicate_pred blocks) (delay cnd) ((explicate_assign blocks) (delay thn) x cont) ((explicate_assign blocks) (delay els) x cont))]
+        [(Prim op es) (Seq (Assign (Var x) (Prim op es)) (force cont))]
+        [else (error "explicate_assign unhandled case" forced-e)]))))
 
 (define (explicate_tail blocks)
   (lambda (e)
-    (match e
-      [(Var x) (Return (Var x))]
-      [(Int n) (Return (Int n))]
-      [(Bool b) (Return (Bool b))]
-      [(Let x rhs body) ((explicate_assign blocks) rhs x ((explicate_tail blocks) body))]
-      [(If cnd thn els) ((explicate_pred blocks) cnd ((explicate_tail blocks) thn) ((explicate_tail blocks) els))]
-      [(Prim op atms) (Return (Prim op atms))]
-      [else (error "explicate_tail unhandled case" e)])))
+    (lazy
+      (define forced-e (force e))
+      (match forced-e
+        [(Var x) (Return (Var x))]
+        [(Int n) (Return (Int n))]
+        [(Bool b) (Return (Bool b))]
+        [(Let x rhs body) ((explicate_assign blocks) (delay rhs) x ((explicate_tail blocks) (delay body)))]
+        [(If cnd thn els) ((explicate_pred blocks) cnd ((explicate_tail blocks) thn) ((explicate_tail blocks) els))]
+        [(Prim op atms) (Return (Prim op atms))]
+        [else (error "explicate_tail unhandled case" forced-e)]))))
 
+;; create a new block with the instructions of tail.
+;; return a single instruction `Goto label` where `label` points to the block just created.
 (define (create_block blocks) 
   (lambda (tail)
-    (match tail
-      [(Goto label) (Goto label)]
-      [else
-        (let ([label (gensym 'block)])
-          (dict-set! blocks label tail)
-          (Goto label))])))
+    (delay
+      (define t (force tail))
+      (match t
+        [(Goto label) (Goto label)]
+        [else
+          (let ([label (gensym 'block)])
+            (dict-set! blocks label t)
+            (Goto label))]))))
 
 
 (define cmp-op '(eq? < <= > >=))
@@ -280,34 +289,36 @@
 ;; (exp-bool, tail, tail) -> tail
 (define (explicate_pred blocks)
   (lambda (cnd thn els)
-    (match cnd
-      [(Var x) 
-        (IfStmt (Prim 'eq? (list (Var x) (Bool #t)))
-                ((create_block blocks) thn)
-                ((create_block blocks) els))]
-      [(Let x rhs body) 
-        ((explicate_assign blocks) rhs x ((explicate_pred blocks) body thn els))]
-      [(Prim 'not (list e))
-        ((explicate_pred blocks) e els thn)]
-      [(Prim op es) #:when (member op cmp-op)
-        (IfStmt (Prim op es) 
-        ((create_block blocks) thn)
-        ((create_block blocks) els))]
-      [(Bool b) (if b thn els)]
-      [(If cnd-inn thn-inn els-inn) 
-        (let ([outer-thn ((create_block blocks) thn)]
-              [outer-els ((create_block blocks) els)])
-          ((explicate_pred blocks) cnd-inn
-                          ((explicate_pred blocks) thn-inn outer-thn outer-els)
-                          ((explicate_pred blocks) els-inn outer-thn outer-els)))]
-      [else (error "explicate_pred unhandled case" cnd)])))
+    (lazy
+      (define forced-cnd (force cnd))
+      (match forced-cnd
+        [(Var x) 
+          (IfStmt (Prim 'eq? (list (Var x) (Bool #t)))
+                  (force ((create_block blocks) thn))
+                  (force ((create_block blocks) els)))]
+        [(Let x rhs body) 
+          ((explicate_assign blocks) (delay rhs) x ((explicate_pred blocks) (delay body) thn els))]
+        [(Prim 'not (list e))
+          ((explicate_pred blocks) (delay e) els thn)]
+        [(Prim op es) #:when (member op cmp-op)
+          (IfStmt (Prim op es) 
+          (force ((create_block blocks) thn))
+          (force ((create_block blocks) els)))]
+        [(Bool b) (if b (force thn) (force els))]
+        [(If cnd-inn thn-inn els-inn) 
+          (let ([outer-thn ((create_block blocks) thn)]
+                [outer-els ((create_block blocks) els)])
+            ((explicate_pred blocks) (delay cnd-inn)
+                            ((explicate_pred blocks) (delay thn-inn) outer-thn outer-els)
+                            ((explicate_pred blocks) (delay els-inn) outer-thn outer-els)))]
+        [else (error "explicate_pred unhandled case" forced-cnd)]))))
 
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
   (match p
     [(Program info e) (CProgram info (let ([basic-blocks (make-hash)])
                                        (begin
-                                         (dict-set! basic-blocks (cp-label 'start) ((explicate_tail basic-blocks) e))
+                                         (dict-set! basic-blocks (cp-label 'start) (force ((explicate_tail basic-blocks) e)))
                                          basic-blocks)))]))
 
 (define (atm->args a)
