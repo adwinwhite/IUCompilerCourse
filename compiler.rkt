@@ -375,7 +375,7 @@
 
 (define (write-locs instr)
   (let ([args (match instr
-                [(Instr op (list arg1 arg2)) #:when (member op '(subq addq xorq movq movzbq set))
+                [(Instr op (list arg1 arg2)) #:when (member op '(subq addq xorq movq movzbq))
                  (set arg2)]
                 [(Instr 'negq (list arg1))
                  (set arg1)]
@@ -383,6 +383,8 @@
                  (set)]
                 [(Instr 'cmpq (list arg1 arg2))
                  (set)]
+                [(Instr 'set (list cc arg1))
+                 (set (Reg (byte-reg->full-reg (ByteReg-name arg1))))]
                 [(Instr 'popq (list arg1))
                  (set arg1)]
                 [(Callq label arity)
@@ -425,7 +427,7 @@
                    [n (list->set (map (lambda (x)
                                         Deref 'rbp (+ 16 (* 8 x)))
                                       (stream->list (in-range (- n 6)))))])]
-                [Retq
+                [(struct Retq _)
                  (set (Reg 'rax))]
                 [(or (Jmp label) (JmpIf _ label))
                  (car (dict-ref env label))]
@@ -496,13 +498,16 @@
 
 (define not-equal? (compose1 not equal?))
 
-(define (build-interference-block block init)
+(define (build-interference-block block init-g)
   (match block
     [(Block info instrs)
      (foldl (lambda (instr lvs interf-graph)
               (match instr
-                [(Instr 'movq (list s d))
-                 (let ([vs (filter (lambda (v)
+                [(Instr op (list s d)) #:when (member op '(movq movzbq))
+                 (let ([s (match op
+                            ['movq s]
+                            ['movzbq (Reg (byte-reg->full-reg (ByteReg-name s)))])]
+                       [vs (filter (lambda (v)
                                      (and (not-equal? v s) (not-equal? v d)))
                                    (set->list lvs))])
                        (begin
@@ -518,11 +523,11 @@
                                       (begin
                                         (add-edge! interf-graph v d)))))
                           interf-graph))]))
-            init
+            init-g
             instrs
             (list-tail (dict-ref info 'live-vars) 1))]))
 
-(define (build-move-graph instrs)
+(define (build-move-graph instrs init-g)
   (foldl (lambda (instr g)
            (match instr
               [(Prim 'movq (list arg1 arg2)) 
@@ -532,7 +537,7 @@
                           (add-edge! g arg1 arg2)
                           g)])]
               [else g]))
-         (apply undirected-graph (list '()))
+         init-g
          instrs))
 
 
@@ -541,12 +546,12 @@
 (define (build-interference p)
   (match p
      [(X86Program info blocks) 
-     (X86Program (let ([move-graph (build-move-graph (match (dict-ref blocks (cp-label 'start))
-                                                        [(Block _ instrs) instrs]))]
-                       [interf-graph 
-                                (foldl build-interference-block (apply undirected-graph (list '())) (map (lambda (label)
-                                                                                          (dict-ref blocks label))
-                                                                                        (list (cp-label 'start))))])
+     (X86Program (let ([move-graph (foldl build-move-graph
+                                          (apply undirected-graph (list '()))
+                                          (map Block-instr* (dict-values blocks)))]
+                       [interf-graph (foldl build-interference-block 
+                                            (apply undirected-graph (list '())) 
+                                            (dict-values blocks))])
                     (begin
                       (display (graphviz interf-graph))
                       (dict-set 
@@ -647,6 +652,8 @@
           ((assign-color! saturations) colored v)
           (update-neighbors! v g saturations (dict-ref colored v))
           (update-priority! pque item-handles v g)))
+      ;; in case of empty interferecne graph
+      (dict-set! colored (Reg 'rax) (hash-ref reg-num 'rax))
       colored)))
 
 (define (num->mem n)
@@ -659,11 +666,21 @@
   (lambda (arg)
     (match arg
       [(or (Reg _) (Var _)) (num->mem (dict-ref colored arg))]
-      [(Imm _) arg])))
+      [(or (Imm _) (ByteReg _)) arg])))
+
+(define (to-full-reg arg)
+  (match arg
+    [(ByteReg b) (Reg (byte-reg->full-reg b))]
+    [else arg]))
 
 (define (assign-homes-instr colored)
   (lambda (instr)
     (match instr
+      ;; set instruction has special cc which is not actual argument.
+      [(Instr 'set _) instr]
+      [(Instr 'movq (list s (Var x))) (if (hash-has-key? colored (Var x))
+                                        (Instr 'movq (list ((assign-arg colored) s) ((assign-arg colored) (Var x))))
+                                        (Instr 'nop '()))]
       [(Instr name args) (Instr name (map (assign-arg colored) args))]
       [else instr])))
 
@@ -680,7 +697,7 @@
 ;; allocate-registers : pseudo-x86 -> pseudo-x86
 (define (allocate-registers p)
   (match p
-    [(X86Program info (list (cons label (Block _ instrs)))) 
+    [(X86Program info blocks) 
      (let ([colored (color-graph (dict-ref info 'conflict) (dict-ref info 'move-relation))])
       (X86Program (dict-set 
                    (dict-set info 'stack-space (stack-size colored))
@@ -696,7 +713,14 @@
                                             #t
                                             #f))
                                         (dict-values colored)))))
-                  (list (cons label (Block '() (map (assign-homes-instr colored) instrs))))))]))
+                  (dict-map/copy blocks 
+                                 (lambda (label block) 
+                                   (values label 
+                                           (Block '() (filter (lambda (instr)
+                                                                (match instr
+                                                                  [(Instr 'nop _) #f]
+                                                                  [else #t]))
+                                                              (map (assign-homes-instr colored) (Block-instr* block)))))))))]))
 
 
 (define (patch-instrs instrs)
@@ -775,8 +799,8 @@
      ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
      ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
      ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
-     ; ("build interference" ,build-interference ,interp-pseudo-x86-0)
-     ; ("allocate registers" ,allocate-registers ,interp-x86-0)
+     ("build interference" ,build-interference ,interp-pseudo-x86-1)
+     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
      ; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ; ))
