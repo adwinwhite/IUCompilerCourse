@@ -835,10 +835,10 @@
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
   (match p
-    [(X86Program info (list (cons start (Block _ instrs)))) 
-     (X86Program info (list (cons start (Block '() (patch-instrs instrs)))
-                            (cons (cp-label 'main) (Block '() (prelude info)))
-                            (cons (cp-label 'conclusion) (Block '() (conclusion info)))))]))
+    [(X86Program info blocks) 
+     (X86Program info (dict-set 
+                        (dict-set blocks (cp-label 'main) (Block '() (prelude info)))
+                        (cp-label 'conclusion) (Block '() (conclusion info))))]))
 
 
      
@@ -859,7 +859,7 @@
      ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
      ("remove jumps" ,remove-jumps , interp-pseudo-x86-1)
      ("patch instructions" ,patch-instructions ,interp-x86-1)
-     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
      ; ))
      ))
 

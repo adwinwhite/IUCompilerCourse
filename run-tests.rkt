@@ -29,5 +29,5 @@
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-;; (compiler-tests "if" type-check-Lif compiler-passes "cond_test" (tests-for "cond"))
+(compiler-tests "if" type-check-Lif compiler-passes "cond_test" (tests-for "cond"))
 
