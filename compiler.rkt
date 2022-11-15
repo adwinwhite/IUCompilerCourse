@@ -131,20 +131,58 @@
                           [(Prim '- (list ire2 (Int n1))) (Prim '+ (list (Int n1) (Prim '- (list ire1 ire2))))]
                           [else (Prim '- (list ire1 ic2))])]))
 
+(define cmp-op '(eq? < <= > >=))
+
+(define cmp-proc (list eq? < <= > >=))
+
+(define cmp-set '(sete setl setle setg setge))
+
+(define cmp-cc '(e l le g ge))
+
+(define cmp-jmp '(je jl jle jg jge))
+
+(define cmp-op-proc (map cons cmp-op cmp-proc))
+
+(define cmp-op-set (map cons cmp-op cmp-set))
+
+(define cmp-op-jmp (map cons cmp-op cmp-jmp))
+
+(define cmp-op-cc (map cons cmp-op cmp-cc))
+
+(define (pe-cmp op e1 e2)
+  (match* (e1 e2)
+    [((Int n1) (Int n2))
+     (Bool ((dict-ref cmp-op-proc op) n1 n2))]
+    [((Bool b1) (Bool b2)) #:when (equal? op 'eq?)
+     (Bool ((dict-ref cmp-op-proc op) b1 b2))]
+    [(_ _) (Prim op (list e1 e2))]))
+
+(define (pe-if cnd thn els)
+  (match cnd
+    [(Bool b)
+     (if b
+       thn
+       els)]
+    [else (If cnd thn els)]))
+
 ;; Only returns (+ n x) or (- x n) or (- n x). neg -> sub.
 (define (pe-exp e)
   (match e
     [(Var x) (Var x)]
     [(Int n) (Int n)]
+    [(Bool b) (Bool b)]
     [(Prim 'read '()) (Prim 'read '())]
     [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
     [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
     [(Prim '- (list e1 e2)) (pe-sub (pe-exp e1) (pe-exp e2))]
+    [(Prim op (list e1 e2)) #:when (member op cmp-op)
+     (pe-cmp op (pe-exp e1) (pe-exp e2))]
     [(Let x exp body) (Let x (pe-exp exp) (pe-exp body))]
+    [(If cnd thn els) (pe-if (pe-exp cnd) (pe-exp thn) (pe-exp els))]
     [else e]))
     
 
-(define (pe-Lint p)
+(define (pe-Lif p)
   (match p
     [(Program info e) (Program info (pe-exp e))]))
 
@@ -272,19 +310,6 @@
             (Goto label))]))))
 
 
-(define cmp-op '(eq? < <= > >=))
-
-(define cmp-set '(sete setl setle setg setge))
-
-(define cmp-cc '(e l le g ge))
-
-(define cmp-jmp '(je jl jle jg jge))
-
-(define cmp-op-set (map cons cmp-op cmp-set))
-
-(define cmp-op-jmp (map cons cmp-op cmp-jmp))
-
-(define cmp-op-cc (map cons cmp-op cmp-cc))
 
 ;; (exp-bool, tail, tail) -> tail
 (define (explicate_pred blocks)
@@ -847,8 +872,8 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes 
-  `( ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
-  ; `( ("partial evaluator" ,pe-Lint ,interp-Lif ,type-check-Lif)
+  `( ("partial evaluator" ,pe-Lif ,interp-Lif ,type-check-Lif)
+     ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
      ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
      ; ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
