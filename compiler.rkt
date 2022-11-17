@@ -3,11 +3,11 @@
 (require racket/set racket/stream)
 (require racket/fixnum)
 (require "multigraph.rkt")
-(require "interp-Lif.rkt")
-(require "interp-Cif.rkt")
+(require "interp-Lwhile.rkt")
+(require "interp-Cwhile.rkt")
 (require "interp.rkt")
-(require "type-check-Lif.rkt")
-(require "type-check-Cif.rkt")
+(require "type-check-Lwhile.rkt")
+(require "type-check-Cwhile.rkt")
 (require "utilities.rkt")
 (require "priority_queue.rkt")
 (provide (all-defined-out))
@@ -171,6 +171,12 @@
     [(Var x) (Var x)]
     [(Int n) (Int n)]
     [(Bool b) (Bool b)]
+    [(Void) (begin
+              (println e)
+              Void)]
+    [(SetBang var exp) (SetBang var (pe-exp exp))]
+    [(Begin es body) (Begin (map pe-exp es) (pe-exp body))]
+    [(WhileLoop cnd body) (WhileLoop (pe-exp cnd) (pe-exp body))]
     [(Prim 'read '()) (Prim 'read '())]
     [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
     [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
@@ -182,7 +188,7 @@
     [else e]))
     
 
-(define (pe-Lif p)
+(define (pe-Lwhile p)
   (match p
     [(Program info e) (Program info (pe-exp e))]))
 
@@ -223,6 +229,7 @@
        (Var (dict-ref env x))]
       [(Int n) (Int n)]
       [(Bool b) (Bool b)]
+      [(Void) (Void)]
       [(Let x e body)
        (let* ([unique-name ((uniquify-name env) x)]
               [new-env (dict-set env x unique-name)])
@@ -230,17 +237,61 @@
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))]
       [(If cnd thn els)
-       (If ((uniquify-exp env) cnd) ((uniquify-exp env) thn) ((uniquify-exp env) els))])))
+       (If ((uniquify-exp env) cnd) ((uniquify-exp env) thn) ((uniquify-exp env) els))]
+      [(SetBang var exp) (SetBang (dict-ref env var) ((uniquify-exp env) exp))]
+      [(Begin es body) (Begin (map (uniquify-exp env) es) ((uniquify-exp env) body))]
+      [(WhileLoop cnd body) (WhileLoop ((uniquify-exp env) cnd) ((uniquify-exp env) body))]
+      )))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
+(define (collect-setbang e)
+  (match e
+    [(Var x) (set)]
+    [(Int n) (set)]
+    [(Bool b) (set)]
+    [(Void) (set)]
+    [(Let x exp body) (set-union (collect-setbang exp) (collect-setbang body))]
+    [(Prim op es) (if (eq? (length es) 0)
+                    (set)
+                    (apply set-union (map collect-setbang es)))]
+    [(If cnd thn els) (set-union (collect-setbang cnd) (collect-setbang thn) (collect-setbang els))]
+    [(SetBang var exp) (set-union (set var) (collect-setbang exp))]
+    [(Begin es body) (set-union (apply set-union (map collect-setbang es)) (collect-setbang body))]
+    [(WhileLoop cnd body) (set-union (collect-setbang cnd) (collect-setbang body))]))
+
+(define ((uncover-get-exp mutable-vars) e)
+  (define (mut->getbang x)
+    (if (set-member? mutable-vars x)
+       (GetBang x)
+       (Var x)))
+  (match e
+    [(Var x) (mut->getbang x)]
+    [(Int n) (Int n)]
+    [(Bool b) (Bool b)]
+    [(Void) (Void)]
+    [(Let x exp body) (Let x ((uncover-get-exp mutable-vars) exp) ((uncover-get-exp mutable-vars) body))]
+    [(Prim op es) (Prim op (map (uncover-get-exp mutable-vars) es))]
+    [(If cnd thn els) (If ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) thn) ((uncover-get-exp mutable-vars) els))]
+    [(SetBang var exp) (SetBang var ((uncover-get-exp mutable-vars) exp))]
+    [(Begin es body) (Begin (map (uncover-get-exp mutable-vars) es) ((uncover-get-exp mutable-vars) body))]
+    [(WhileLoop cnd body) (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]))
+
+
+
+;; uncover-get!: Lwhile->Lwhile
+(define (uncover-getbang p)
+  (match p
+    [(Program info e) (Program info ((uncover-get-exp (collect-setbang e)) e))]))
+
 
 (define remove-complex-opera-exp
   (lambda (e)
     (match e
+      [(GetBang x) (Var x)]
       [(Let x e body)
        (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
       [(Prim op (list e))
@@ -260,6 +311,11 @@
               Let 'tmp2 (remove-complex-opera-exp e2) (
                 Prim op (list (Var 'tmp1) (Var 'tmp2)))))])]
       [(If cnd thn els) (If (remove-complex-opera-exp cnd) (remove-complex-opera-exp thn) (remove-complex-opera-exp els))]
+      [(SetBang var exp) (if (atm? exp)
+                           e
+                           (Let 'tmp (remove-complex-opera-exp exp) (SetBang var (Var 'tmp))))]
+      [(Begin es body) (Begin (map remove-complex-opera-exp es) (remove-complex-opera-exp body))]
+      [(WhileLoop cnd body) (WhileLoop (remove-complex-opera-exp cnd) (remove-complex-opera-exp body))]
       [else e])))
 
 
@@ -872,19 +928,20 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes 
-  `( ("partial evaluator" ,pe-Lif ,interp-Lif ,type-check-Lif)
-     ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
-     ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
+  `( ("partial evaluator" ,pe-Lwhile ,interp-Lwhile ,type-check-Lwhile)
+     ("shrink" ,shrink ,interp-Lwhile ,type-check-Lwhile)
+     ("uniquify" ,uniquify ,interp-Lwhile ,type-check-Lwhile)
      ; ;; Uncomment the following passes as you finish them.
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-     ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
-     ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
-     ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
-     ("build interference" ,build-interference ,interp-pseudo-x86-1)
-     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
-     ("remove jumps" ,remove-jumps , interp-pseudo-x86-1)
-     ("patch instructions" ,patch-instructions ,interp-x86-1)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+     ("uncover get!" ,uncover-getbang ,interp-Lwhile ,type-check-Lwhile)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
+     ; ("explicate control" ,explicate-control ,interp-Cwhile ,type-check-Cwhile)
+     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
+     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
+     ; ("build interference" ,build-interference ,interp-pseudo-x86-1)
+     ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
+     ; ("remove jumps" ,remove-jumps , interp-pseudo-x86-1)
+     ; ("patch instructions" ,patch-instructions ,interp-x86-1)
+     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
      ; ))
      ))
 
