@@ -1,5 +1,6 @@
 #lang racket
 (require graph)
+(require data/queue)
 (require racket/set racket/stream)
 (require racket/fixnum)
 (require "multigraph.rkt")
@@ -535,7 +536,7 @@
 
     
 
-(define ((read-locs env) instr)
+(define (read-locs instr)
   (let ([args (match instr
                 [(Instr op (list arg1 arg2)) #:when (member op '(subq addq xorq cmpq)) 
                  (set arg1 arg2)]
@@ -566,30 +567,36 @@
                 [(struct Retq _)
                  (set (Reg 'rax))]
                 [(or (Jmp label) (JmpIf _ label))
-                 (car (dict-ref env label))]
+                 (set)]
                 )])
     (filter-imm args)))
 
 
 
-(define ((uncover-instrs env) instrs)
+(define (uncover-instrs instrs live-after)
   (foldr (lambda (instr lvs)
            (cons (set-union (set-subtract (car lvs) (write-locs instr))
-                            ((read-locs env) instr))
+                            (read-locs instr))
                  lvs))
-         (list (set))
+         (list live-after)
          instrs))
 
-(define ((uncover-block env) block)
+(define ((uncover-label blocks) label live-after)
+  (if (equal? label 'conclusion)
+    (set (Reg 'rsp) (Reg 'rax))
+    (car (uncover-instrs (Block-instr* (dict-ref blocks label)) live-after))))
+
+(define (uncover-block label block live-after)
   (match block
     [(Block info instrs)
-     (Block (dict-set info 'live-vars ((uncover-instrs env) instrs)) instrs)]))
+     (Block (dict-set info 'live-vars (uncover-instrs instrs live-after)) instrs)]))
 
 (define (live-vars-in-block block)
   (match block
     [(Block info _)
      (dict-ref info 'live-vars)]))
 
+;; TODO: filter out unused blocks(no other block pointing to).
 ;; blocks -> directed graph of label
 (define (build-control-flow blocks)
   (let ([cfg (make-multigraph '())])
@@ -599,39 +606,63 @@
             [(Block info instrs)
              (begin
                (match (last instrs)
-                [(Jmp next-label) #:when (not (equal? next-label 'conclusion))
+                [(Jmp next-label) 
                  (add-directed-edge! cfg label next-label)]
                 [else void])
                (let ([len-of-block (length instrs)])
                    (match (list-ref instrs (- len-of-block 2))
-                      [(JmpIf _ next-label) #:when (not (equal? next-label 'conclusion))
+                      [(JmpIf _ next-label)
                        (add-directed-edge! cfg label next-label)]
                       [else void]
                       )))]))
       cfg)))
 
-(define (sort-uncover-blocks cfg)
-  (if (null? (get-vertices cfg))
-    (list (cp-label 'start))
-    (tsort (transpose cfg))))
+;; multigraph has a bug that vertices not pointed to are ignored. 
+;; mapping: {label->live-before set}
+(define (analyze_dataflow G transfer bottom join)
+  (define mapping (make-hash))
+  (for ([v (in-vertices G)])
+    (dict-set! mapping v bottom))
+  (define worklist (make-queue))
+  (for ([v (in-vertices G)])
+    (enqueue! worklist v))
+  (define trans-G (transpose G))
+  (while (not (queue-empty? worklist))
+    (define node (dequeue! worklist))
+    (define input (for/fold ([state bottom])
+                            ([pred (in-neighbors trans-G node)])
+                    (join state (dict-ref mapping pred))))
+    (define output (transfer node input))
+    (cond [(not (equal? output (dict-ref mapping node)))
+      (dict-set! mapping node output)
+      (for ([v (in-neighbors G node)])
+        (enqueue! worklist v))]))
+  mapping)
+
+(define ((uncover-bottom live-befores control-flow-graph) label)
+  (foldl set-union
+         (set)
+         (map (lambda (next-label)
+                (dict-ref live-befores next-label))
+              (get-neighbors control-flow-graph label))))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
 (define (uncover-live p)
   (match p
     [(X86Program info blocks) 
-     (let ([cfg (build-control-flow blocks)])
+     (let* ([cfg (build-control-flow blocks)]
+            [live-befores (analyze_dataflow (transpose cfg) (uncover-label blocks) (set) set-union)]
+            [live-afters (foldl (lambda (label las)
+                                  (dict-set las label ((uncover-bottom live-befores cfg) label)))
+                                '()
+                                (get-vertices cfg))])
        (X86Program (dict-set info 'control-flow-graph cfg)
-                  (let ([ordered-labels (sort-uncover-blocks cfg)]
-                        [label-lives (make-hash)])
-                          (cdr (foldl (lambda (label result)
-                                         (let* ([label-lives (car result)]
-                                               [uncovered-blocks (cdr result)]
-                                               [uncovered-block ((uncover-block label-lives) (dict-ref blocks label))])
-                                           (cons (dict-set label-lives label (live-vars-in-block uncovered-block))
-                                                 (dict-set uncovered-blocks label uncovered-block))))
-                                      (cons (dict-set '() 'conclusion (list (set (Reg 'rax) (Reg 'rsp))))
-                                             '())
-                                      ordered-labels)))))]))
+                   (foldl (lambda (label bs)
+                            (dict-set bs label (uncover-block label (dict-ref blocks label) (dict-ref live-afters label))))
+                          '()
+                          (get-vertices cfg))))]))
+
+
 
 (define not-equal? (compose1 not equal?))
 
@@ -957,6 +988,7 @@
         (Instr 'popq (list (Reg 'rbp)))
         (Retq))))
 
+;; TODO: no need to change %rsp if stack is empty
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
   (match p
@@ -980,12 +1012,12 @@
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
      ("explicate control" ,explicate-control ,interp-Cwhile ,type-check-Cwhile)
      ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-1)
-     ; ("build interference" ,build-interference ,interp-pseudo-x86-1)
-     ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-1)
-     ; ("remove jumps" ,remove-jumps , interp-pseudo-x86-1)
-     ; ("patch instructions" ,patch-instructions ,interp-x86-1)
-     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+     ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+     ("build interference" ,build-interference ,interp-pseudo-x86-2)
+     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
+     ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
+     ("patch instructions" ,patch-instructions ,interp-x86-1)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
      ; ))
      ))
 
