@@ -287,7 +287,7 @@
     [(SetBang var exp) (SetBang var (expose-allocation-exp exp))]
     [(Begin es body) (Begin (map expose-allocation-exp es) (expose-allocation-exp body))]
     [(WhileLoop cnd body) (WhileLoop (expose-allocation-exp cnd) (expose-allocation-exp body))]
-    [(HasType (Prim 'vector es) ts) ((create-vector '() ts) es)]
+    [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]
     ))
 
 
@@ -391,6 +391,8 @@
   (match p
     [(Program info e) (Program info (remove-complex-opera-exp e))]))
 
+;; whether the expression has side effect
+;; do I write this expression for its side effect?
 (define (pure-exp? e)
   (match e 
     [(Var x) #t]
@@ -398,11 +400,16 @@
     [(Bool b) #t]
     [(Void) #t]
     [(Let x exp body) (and (pure-exp? exp) (pure-exp? body))]
+    [(Prim 'vector-set! es) #f]
     [(Prim op es) (andmap pure-exp? es)]
     [(If cnd thn els) (and (pure-exp? cnd) (pure-exp? thn) (pure-exp? els))]
     [(SetBang var exp) #f]
     [(Begin es body) (and (andmap pure-exp? es) (pure-exp? body))]
-    [(WhileLoop cnd body) (and (pure-exp? cnd) (pure-exp? body))]))
+    [(WhileLoop cnd body) (and (pure-exp? cnd) (pure-exp? body))]
+    [(Allocate bytes ts) #t]
+    [(GlobalValue var) #t]
+    [(Collect bytes) #f]
+    ))
 
 
 ;; create a new block with the instructions of tail.
@@ -439,6 +446,8 @@
       [(WhileLoop cnd body) ((explicate-while blocks) cnd body (Seq (Assign (Var x) (Void)) cont))]
       [(If cnd thn els) ((explicate-pred blocks) cnd ((explicate-assign blocks) thn x cont) ((explicate-assign blocks) els x cont))]
       [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+      [(Allocate bytes ts) (Seq (Assign (Var x) (Allocate bytes ts)) cont)]
+      [(GlobalValue var) (Seq (Assign (Var x) (GlobalValue var)) cont)]
       [else (error "explicate-assign unhandled case" e)])))
 
 ;; exp -> tail
@@ -473,11 +482,14 @@
           (IfStmt (Prim op es) 
           (force ((create-block blocks) thn))
           (force ((create-block blocks) els)))]
+        [(Prim 'vector-ref (list vec (Int i)))
+         (let ([tmp (gentmp)])
+           ((explicate-assign blocks) cnd tmp ((explicate-pred blocks) (Var tmp) thn els)))]
         [(Bool b) (if b thn els)]
         [(If cnd-inn thn-inn els-inn) 
           (let ([outer-thn ((create-block blocks) thn)]
                 [outer-els ((create-block blocks) els)])
-            ((explicate-pred blocks) (delay cnd-inn)
+            ((explicate-pred blocks) cnd-inn
                             ((explicate-pred blocks) thn-inn outer-thn outer-els)
                             ((explicate-pred blocks) els-inn outer-thn outer-els)))]
         [(Begin es body) ((explicate-begin blocks) es
@@ -495,6 +507,8 @@
         [(WhileLoop cnd body) ((explicate-while blocks) cnd body cont)]
         [(Let x rhs body) ((explicate-assign blocks) rhs x ((explicate-effect blocks) body cont))]
         [(If cnd thn els) ((explicate-pred blocks) cnd ((explicate-effect blocks) thn cont) ((explicate-effect blocks) els cont))]
+        [(Prim 'vector-set! _) (Seq effect cont)]
+        [(Collect _) (Seq effect cont)]
         [else (error "explicate-tail unhandled case" effect)])))
 
 (define ((explicate-begin blocks) es cont)
@@ -1076,7 +1090,7 @@
      ("expose allocation" ,expose-allocation ,interp-Lvec-prime ,type-check-Lvec)
      ("uncover get!" ,uncover-getbang ,interp-Lvec-prime ,type-check-Lvec)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime ,type-check-Lvec)
-     ; ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
+     ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
      ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
      ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
      ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
