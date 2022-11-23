@@ -2,11 +2,11 @@
 #lang racket
 
 (require "utilities.rkt")
-(require "interp-Lwhile.rkt")
-(require "interp-Cwhile.rkt")
+(require "interp-Lvec-prime.rkt")
+(require "interp-Cvec.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
-(require "type-check-Lwhile.rkt")
+(require "type-check-Lvec.rkt")
 (debug-level 1)
 ;; (AST-output-syntax 'concrete-syntax)
 
@@ -25,9 +25,8 @@
           (string=? r (car (string-split p "_"))))
         all-tests)))
 
-(interp-tests "while" type-check-Lwhile compiler-passes interp-Lwhile "loop_test" (tests-for "loop"))
+(interp-tests "vec" type-check-Lvec compiler-passes interp-Lvec-prime "vectors_test" (tests-for "vectors"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-(compiler-tests "while" type-check-Lwhile compiler-passes "loop_test" (tests-for "loop"))
-
+;; (compiler-tests "vec" type-check-Lvec compiler-passes "vectors_test" (tests-for "vectors"))

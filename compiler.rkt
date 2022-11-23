@@ -4,11 +4,12 @@
 (require racket/set racket/stream)
 (require racket/fixnum)
 (require "multigraph.rkt")
-(require "interp-Lwhile.rkt")
-(require "interp-Cwhile.rkt")
+(require "interp-Lvec.rkt")
+(require "interp-Lvec-prime.rkt")
+(require "interp-Cvec.rkt")
 (require "interp.rkt")
-(require "type-check-Lwhile.rkt")
-(require "type-check-Cwhile.rkt")
+(require "type-check-Lvec.rkt")
+(require "type-check-Cvec.rkt")
 (require "utilities.rkt")
 (require "priority_queue.rkt")
 (provide (all-defined-out))
@@ -189,7 +190,7 @@
     [else e]))
     
 
-(define (pe-Lwhile p)
+(define (pe-Lvec p)
   (match p
     [(Program info e) (Program info (pe-exp e))]))
 
@@ -242,12 +243,59 @@
       [(SetBang var exp) (SetBang (dict-ref env var) ((uniquify-exp env) exp))]
       [(Begin es body) (Begin (map (uniquify-exp env) es) ((uniquify-exp env) body))]
       [(WhileLoop cnd body) (WhileLoop ((uniquify-exp env) cnd) ((uniquify-exp env) body))]
+      [(HasType exp t) (HasType ((uniquify-exp env) exp) t)]
       )))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
+
+(define (gentmp)
+  (gensym 'tmp))
+
+;; tmps: temporary variables that are bound to expressions.
+;; es: remaining expressions to bind.
+(define ((create-vector tmps types) es)
+  (if (null? es)
+    (let ([bytes (* 8 (+ 1 (length tmps)))])
+      (Begin (list (If (Prim '< (list (Prim '+ (list (GlobalValue 'free_ptr) (Int bytes)))
+                                      (GlobalValue 'fromspace_end)))
+                       (Void)
+                       (Collect bytes)))
+             (let ([tmpvec (gensym 'vec)])
+                (Let tmpvec (Allocate (length tmps) types)
+                    (Begin (for/list ([tmp (reverse tmps)]
+                                      [index (in-naturals)])
+                                     (Prim 'vector-set! (list (Var tmpvec) (Int index) (Var tmp))))
+                           (Var tmpvec))))))
+    (let ([tmp (gentmp)]
+          [head (car es)])
+      (Let tmp head ((create-vector (cons tmp tmps) types) (cdr es))))))
+
+(define (expose-allocation-exp exp)
+  (match exp
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Bool b) (Bool b)]
+    [(Void) (Void)]
+    [(Let x e body) (Let x (expose-allocation-exp e) (expose-allocation-exp body))]
+    [(Prim op es)
+     (Prim op (for/list ([e es]) (expose-allocation-exp e)))]
+    [(If cnd thn els)
+     (If (expose-allocation-exp cnd) (expose-allocation-exp thn) (expose-allocation-exp els))]
+    [(SetBang var exp) (SetBang var (expose-allocation-exp exp))]
+    [(Begin es body) (Begin (map expose-allocation-exp es) (expose-allocation-exp body))]
+    [(WhileLoop cnd body) (WhileLoop (expose-allocation-exp cnd) (expose-allocation-exp body))]
+    [(HasType (Prim 'vector es) ts) ((create-vector '() ts) es)]
+    ))
+
+
+;; expose-allocation : Lvec -> Lvec
+(define (expose-allocation p)
+  (match p
+    [(Program info e) 
+     (Program info (expose-allocation-exp e))]))
 
 (define (collect-setbang e)
   (match e
@@ -289,6 +337,8 @@
     [(Program info e) (Program info ((uncover-get-exp (collect-setbang e)) e))]))
 
 
+
+
 (define remove-complex-opera-exp
   (lambda (e)
     (match e
@@ -298,23 +348,29 @@
       [(Prim op (list e))
         (if (atm? e) 
           (Prim op (list e))
-          (Let 'tmp (remove-complex-opera-exp e) (Prim op (list (Var 'tmp)))))]
+          (let ([tmp (gentmp)])
+            (Let tmp (remove-complex-opera-exp e) (Prim op (list (Var tmp))))))]
       [(Prim op (list e1 e2))
         (match (cons (atm? e1) (atm? e2))
           [(cons #t #t)
            (Prim op (list e1 e2))]
           [(cons #t #f)
-           (Let 'tmp (remove-complex-opera-exp e2) (Prim op (list e1 (Var 'tmp))))]
+           (let ([tmp (gentmp)])
+             (Let tmp (remove-complex-opera-exp e2) (Prim op (list e1 (Var tmp)))))]
           [(cons #f #t)
-           (Let 'tmp (remove-complex-opera-exp e1) (Prim op (list (Var 'tmp) e2)))]
+           (let ([tmp (gentmp)])
+             (Let tmp (remove-complex-opera-exp e1) (Prim op (list (Var tmp) e2))))]
           [(cons #f #f)
-            (Let 'tmp1 (remove-complex-opera-exp e1) (
-              Let 'tmp2 (remove-complex-opera-exp e2) (
-                Prim op (list (Var 'tmp1) (Var 'tmp2)))))])]
+           (let ([tmp1 (gentmp)]
+                 [tmp2 (gentmp)])
+            (Let tmp1 (remove-complex-opera-exp e1) (
+              Let tmp2 (remove-complex-opera-exp e2) (
+                Prim op (list (Var tmp1) (Var tmp2))))))])]
       [(If cnd thn els) (If (remove-complex-opera-exp cnd) (remove-complex-opera-exp thn) (remove-complex-opera-exp els))]
       [(SetBang var exp) (if (atm? exp)
                            e
-                           (Let 'tmp (remove-complex-opera-exp exp) (SetBang var (Var 'tmp))))]
+                           (let ([tmp (gentmp)])
+                             (Let tmp (remove-complex-opera-exp exp) (SetBang var (Var tmp)))))]
       [(Begin es body) (Begin (map remove-complex-opera-exp es) (remove-complex-opera-exp body))]
       [(WhileLoop cnd body) (WhileLoop (remove-complex-opera-exp cnd) (remove-complex-opera-exp body))]
       [else e])))
@@ -324,7 +380,7 @@
 ;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
   (match p
-    [(Program info e) (Program info ((uniquify-exp '()) (remove-complex-opera-exp e)))]))
+    [(Program info e) (Program info (remove-complex-opera-exp e))]))
 
 (define (pure-exp? e)
   (match e 
@@ -1004,20 +1060,21 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes 
-  `( ("partial evaluator" ,pe-Lwhile ,interp-Lwhile ,type-check-Lwhile)
-     ("shrink" ,shrink ,interp-Lwhile ,type-check-Lwhile)
-     ("uniquify" ,uniquify ,interp-Lwhile ,type-check-Lwhile)
-     ; ;; Uncomment the following passes as you finish them.
-     ("uncover get!" ,uncover-getbang ,interp-Lwhile ,type-check-Lwhile)
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile ,type-check-Lwhile)
-     ("explicate control" ,explicate-control ,interp-Cwhile ,type-check-Cwhile)
-     ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-     ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-     ("build interference" ,build-interference ,interp-pseudo-x86-2)
-     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
-     ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
-     ("patch instructions" ,patch-instructions ,interp-x86-1)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+  `( 
+     ("partial evaluator" ,pe-Lvec ,interp-Lvec ,type-check-Lvec)
+     ("shrink" ,shrink ,interp-Lvec ,type-check-Lvec)
+     ("uniquify" ,uniquify ,interp-Lvec ,type-check-Lvec)
+     ("expose allocation" ,expose-allocation ,interp-Lvec-prime ,type-check-Lvec)
+     ; ("uncover get!" ,uncover-getbang ,interp-Lvec ,type-check-Lvec)
+     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec ,type-check-Lvec)
+     ; ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
+     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+     ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
+     ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
+     ; ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
+     ; ("patch instructions" ,patch-instructions ,interp-x86-1)
+     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
      ; ))
      ))
 
