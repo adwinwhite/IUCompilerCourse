@@ -310,7 +310,9 @@
     [(If cnd thn els) (set-union (collect-setbang cnd) (collect-setbang thn) (collect-setbang els))]
     [(SetBang var exp) (set-union (set var) (collect-setbang exp))]
     [(Begin es body) (set-union (apply set-union (map collect-setbang es)) (collect-setbang body))]
-    [(WhileLoop cnd body) (set-union (collect-setbang cnd) (collect-setbang body))]))
+    [(WhileLoop cnd body) (set-union (collect-setbang cnd) (collect-setbang body))]
+    [else (set)]
+    ))
 
 (define ((uncover-get-exp mutable-vars) e)
   (define (mut->getbang x)
@@ -327,7 +329,9 @@
     [(If cnd thn els) (If ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) thn) ((uncover-get-exp mutable-vars) els))]
     [(SetBang var exp) (SetBang var ((uncover-get-exp mutable-vars) exp))]
     [(Begin es body) (Begin (map (uncover-get-exp mutable-vars) es) ((uncover-get-exp mutable-vars) body))]
-    [(WhileLoop cnd body) (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]))
+    [(WhileLoop cnd body) (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]
+    [else e]
+    ))
 
 
 
@@ -335,8 +339,6 @@
 (define (uncover-getbang p)
   (match p
     [(Program info e) (Program info ((uncover-get-exp (collect-setbang e)) e))]))
-
-
 
 
 (define remove-complex-opera-exp
@@ -366,6 +368,13 @@
             (Let tmp1 (remove-complex-opera-exp e1) (
               Let tmp2 (remove-complex-opera-exp e2) (
                 Prim op (list (Var tmp1) (Var tmp2))))))])]
+      ;; TODO: got optimized later?
+      [(Prim 'vector-set! (list e1 (Int i) e2)) 
+       (let ([tmpvec (gentmp)]
+             [tmpexp (gentmp)])
+         (Let tmpvec (remove-complex-opera-exp e1)
+            (Let tmpexp (remove-complex-opera-exp e2)
+                (Prim 'vector-set! (list (Var tmpvec) (Int i) (Var tmpexp))))))]
       [(If cnd thn els) (If (remove-complex-opera-exp cnd) (remove-complex-opera-exp thn) (remove-complex-opera-exp els))]
       [(SetBang var exp) (if (atm? exp)
                            e
@@ -1065,8 +1074,8 @@
      ("shrink" ,shrink ,interp-Lvec ,type-check-Lvec)
      ("uniquify" ,uniquify ,interp-Lvec ,type-check-Lvec)
      ("expose allocation" ,expose-allocation ,interp-Lvec-prime ,type-check-Lvec)
-     ; ("uncover get!" ,uncover-getbang ,interp-Lvec ,type-check-Lvec)
-     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec ,type-check-Lvec)
+     ("uncover get!" ,uncover-getbang ,interp-Lvec-prime ,type-check-Lvec)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime ,type-check-Lvec)
      ; ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
      ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
      ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
