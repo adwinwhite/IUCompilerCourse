@@ -406,7 +406,7 @@
     [(SetBang var exp) #f]
     [(Begin es body) (and (andmap pure-exp? es) (pure-exp? body))]
     [(WhileLoop cnd body) (and (pure-exp? cnd) (pure-exp? body))]
-    [(Allocate bytes ts) #t]
+    [(Allocate n ts) #t]
     [(GlobalValue var) #t]
     [(Collect bytes) #f]
     ))
@@ -444,9 +444,10 @@
       [(SetBang var atm) (Seq (Assign (Var var) atm) (Seq (Assign (Var x) (Void)) cont))]
       [(Begin es body) ((explicate-begin blocks) es ((explicate-assign blocks) body x cont))]
       [(WhileLoop cnd body) ((explicate-while blocks) cnd body (Seq (Assign (Var x) (Void)) cont))]
-      [(If cnd thn els) ((explicate-pred blocks) cnd ((explicate-assign blocks) thn x cont) ((explicate-assign blocks) els x cont))]
+      [(If cnd thn els) (let ([goto-cont ((create-block blocks) cont)])
+                          ((explicate-pred blocks) cnd ((explicate-assign blocks) thn x goto-cont) ((explicate-assign blocks) els x goto-cont)))]
       [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
-      [(Allocate bytes ts) (Seq (Assign (Var x) (Allocate bytes ts)) cont)]
+      [(Allocate n ts) (Seq (Assign (Var x) (Allocate n ts)) cont)]
       [(GlobalValue var) (Seq (Assign (Var x) (GlobalValue var)) cont)]
       [else (error "explicate-assign unhandled case" e)])))
 
@@ -506,7 +507,8 @@
         [(Begin es body) ((explicate-begin blocks) es ((explicate-effect blocks) body cont))]
         [(WhileLoop cnd body) ((explicate-while blocks) cnd body cont)]
         [(Let x rhs body) ((explicate-assign blocks) rhs x ((explicate-effect blocks) body cont))]
-        [(If cnd thn els) ((explicate-pred blocks) cnd ((explicate-effect blocks) thn cont) ((explicate-effect blocks) els cont))]
+        [(If cnd thn els) (let ([goto-cont ((create-block blocks) cont)])
+                           ((explicate-pred blocks) cnd ((explicate-effect blocks) thn goto-cont) ((explicate-effect blocks) els goto-cont)))]
         [(Prim 'vector-set! _) (Seq effect cont)]
         [(Collect _) (Seq effect cont)]
         [else (error "explicate-tail unhandled case" effect)])))
@@ -531,6 +533,32 @@
     [(Bool b) (if b (Imm 1) (Imm 0))]
     [(Void) (Imm 0)]
     [else (error "not atm" a)]))
+
+(define (pointer? t)
+  (match t
+    [`(Vector ,@(list _ ...)) #t]
+    ['Integer #f]
+    ['Boolean #f]
+    ['Void #f]
+    [else (error "unhandled type ~a by pointer?" t)]))
+
+(define (generate-pointer-mask ts)
+  (foldl (lambda (t n)
+           (let ([shifted (arithmetic-shift n 1)])
+             (if (pointer? t)
+               (bitwise-ior shifted 1)
+               shifted)))
+         0
+         ts))
+
+(define (generate-tag ts)
+  (let* ([ts (cdr ts)]
+        [len (length ts)])
+    (arithmetic-shift
+      (bitwise-ior 
+        (arithmetic-shift (generate-pointer-mask ts) 6)
+        len)
+      1)))
 
 (define (stmt->instrs s)
   (match s
@@ -557,8 +585,28 @@
                                               (list (Instr 'cmpq (list (atm->args e2) (atm->args e1)))
                                                     (Instr 'set (list (dict-ref cmp-op-cc op) (ByteReg 'al)))
                                                     (Instr 'movzbq (list (ByteReg 'al) x)))]
+                      [(Prim 'vector-ref (list vec (Int i))) (list (Instr 'movq (list vec (Reg 'r11)))
+                                                                   (Instr 'movq (list (Deref 'r11 (* 8 (+ i 1))) x)))]
+                      [(Prim 'vector-set! (list vec (Int i) atm)) (list (Instr 'movq (list vec (Reg 'r11)))
+                                                                        (Instr 'movq (list atm (Deref 'r11 (* 8 (+ i 1)))))
+                                                                        (Instr 'movq (list (Imm 0) x)))]
+                      [(Prim 'vector-length (list vec)) (list (Instr 'movq (list vec (Reg 'r11)))
+                                                              (Instr 'movq (list (Deref 'r11 0) (Reg 'rax)))
+                                                              (Instr 'sarq (list (Imm 1) (Reg 'rax)))
+                                                              (Instr 'andq (list (Imm #b111111) (Reg 'rax)))
+                                                              (Instr 'movq (list (Reg 'rax) x)))]
+                      ;; If we really want to support 50-length, we need to use movabsq rather than movq.
+                      [(Allocate n ts) (list (Instr 'movq (list (Global 'free_ptr) (Reg 'r11)))
+                                             (Instr 'addq (list (Imm (* 8 (+ n 1))) (Global 'free_ptr)))
+                                             (Instr 'movq (list (Imm (generate-tag ts)) (Deref 'r11 0)))
+                                             (Instr 'movq (list (Reg 'r11) x)))]
+                      [(GlobalValue var) (list (Instr 'movq (list (Global var) x)))]
                       [else (error "unhandled expression in assignment statement" exp)])]
     [(Prim 'read '()) (list (Callq 'read_int 0))]
+    [(Prim 'vector-set! (list vec (Int i) atm)) (list (Instr 'movq (list vec (Reg 'r11)))
+                                                      (Instr 'movq (list atm (Deref 'r11 (* 8 (+ i 1))))))]
+    [(Collect bytes) (list (Instr 'movq (list (Reg 'r15) (Reg 'rdi)))
+                           (Instr 'movq (list (Imm bytes) (Reg 'rsi))))]
     [else (error "stmt->instrs unhandled statements" s)]))
 
 (define (tail->instrs t)
@@ -1091,7 +1139,7 @@
      ("uncover get!" ,uncover-getbang ,interp-Lvec-prime ,type-check-Lvec)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime ,type-check-Lvec)
      ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
-     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+     ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
      ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
      ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
      ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
