@@ -606,7 +606,9 @@
     [(Prim 'vector-set! (list vec (Int i) atm)) (list (Instr 'movq (list vec (Reg 'r11)))
                                                       (Instr 'movq (list atm (Deref 'r11 (* 8 (+ i 1))))))]
     [(Collect bytes) (list (Instr 'movq (list (Reg 'r15) (Reg 'rdi)))
-                           (Instr 'movq (list (Imm bytes) (Reg 'rsi))))]
+                           (Instr 'movq (list (Imm bytes) (Reg 'rsi)))
+                           (Callq 'collect 0) 
+                           )]
     [else (error "stmt->instrs unhandled statements" s)]))
 
 (define (tail->instrs t)
