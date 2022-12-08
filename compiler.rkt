@@ -1029,7 +1029,7 @@
                                           (filter (lambda (num)
                                                     (and (not (negative? num)) (< num reg-num-end)))
                                                   (dict-values colored)))))
-                             'rootstack-num (- reg-num-start (apply min (hash-values colored))))
+                             'num-root-spills (- reg-num-start (apply min (hash-values colored))))
                    (dict-map/copy blocks
                                   (lambda (label block)
                                     (values label
@@ -1075,9 +1075,9 @@
    (map
     (lambda (instr)
       (match instr
-        [(Instr name (list (Deref 'rbp loc1) (Deref 'rbp loc2)))
-         (list (Instr 'movq (list (Deref 'rbp loc1) (Reg 'rax)))
-               (Instr name (list (Reg 'rax) (Deref 'rbp loc2))))]
+        [(Instr name (list (Deref reg loc1) (Deref reg loc2)))
+         (list (Instr 'movq (list (Deref reg loc1) (Reg 'rax)))
+               (Instr name (list (Reg 'rax) (Deref reg loc2))))]
         [(Instr 'cmpq (list arg (Imm n)))
          (list (Instr 'movq (list (Imm n) (Reg 'rax))) (Instr 'cmpq (list arg (Reg 'rax))))]
         [(Instr 'movzbq (list byte-reg (Var x)))
@@ -1149,8 +1149,8 @@
     ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ("build interference" ,build-interference ,interp-pseudo-x86-2)
     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
-    ; ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
-    ; ("patch instructions" ,patch-instructions ,interp-x86-1)
+    ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
+    ("patch instructions" ,patch-instructions ,interp-x86-2)
     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
     ; ))
     ))
