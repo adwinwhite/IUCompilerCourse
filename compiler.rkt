@@ -13,6 +13,7 @@
 (require "type-check-Cvec.rkt")
 (require "utilities.rkt")
 (require "priority_queue.rkt")
+(require (prefix-in runtime-config: "runtime-config.rkt"))
 (provide (all-defined-out))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -781,11 +782,11 @@
 (define ((heap-var? types) v)
   (match v
     [(Var x)
-    (let ([t (dict-ref types x)])
-      (match t
-        [`(Vector ...) #t]
-        ['Vector #t]
-        [else #f]))]
+     (let ([t (dict-ref types x)])
+       (match t
+         [`(Vector ...) #t]
+         ['Vector #t]
+         [else #f]))]
     [else #f]))
 
 (define (interferes-callee-regs v g)
@@ -798,8 +799,7 @@
     [(Block info instrs)
      (foldl
       (lambda (instr lvs acc)
-        (let ([interf-graph (car acc)]
-              [call-live-heap-vars (cdr acc)])
+        (let ([interf-graph (car acc)] [call-live-heap-vars (cdr acc)])
           (match instr
             [(Instr op (list s d))
              #:when (member op '(movq movzbq))
@@ -851,18 +851,22 @@
 (define (build-interference p)
   (match p
     [(X86Program info blocks)
-     (X86Program (let* ([move-graph (foldl build-move-graph
-                                          (apply undirected-graph (list '()))
-                                          (map Block-instr* (dict-values blocks)))]
-                       [interf-graph-and-call-lives (foldl (build-interference-block (dict-ref info 'locals-types))
-                                            (cons (apply undirected-graph (list '())) (set))
-                                            (dict-values blocks))]
-                       [interf-graph (car interf-graph-and-call-lives)]
-                       [call-live-heap-vars (cdr interf-graph-and-call-lives)])
-                   (begin
-                     (display (graphviz interf-graph))
-                     (dict-set (dict-set (dict-set info 'conflict interf-graph) 'move-relation move-graph) 'root-vars call-live-heap-vars)))
-                 blocks)]))
+     (X86Program
+      (let* ([move-graph (foldl build-move-graph
+                                (apply undirected-graph (list '()))
+                                (map Block-instr* (dict-values blocks)))]
+             [interf-graph-and-call-lives
+              (foldl (build-interference-block (dict-ref info 'locals-types))
+                     (cons (apply undirected-graph (list '())) (set))
+                     (dict-values blocks))]
+             [interf-graph (car interf-graph-and-call-lives)]
+             [call-live-heap-vars (cdr interf-graph-and-call-lives)])
+        (begin
+          (display (graphviz interf-graph))
+          (dict-set (dict-set (dict-set info 'conflict interf-graph) 'move-relation move-graph)
+                    'root-vars
+                    call-live-heap-vars)))
+      blocks)]))
 
 ; Do I need to keep rax at num=0?
 (define regs '(r15 r11 rbp rsp rax rcx rdx rsi rdi r8 r9 r10 rbx r12 r13 r14))
@@ -875,7 +879,8 @@
 
 (define reg-num-end (+ reg-num-start number-of-reg-alloc))
 
-(define reg-num (apply hash (flatten (map cons regs (sequence->list (in-range reg-num-start reg-num-end))))))
+(define reg-num
+  (apply hash (flatten (map cons regs (sequence->list (in-range reg-num-start reg-num-end))))))
 
 (define num-reg
   (for/hash ([(k v) reg-num])
@@ -900,33 +905,36 @@
 
   (define (available-move-colors saturations colored)
     (lambda (v)
-          (set->list (set-subtract (list->set (move-colors colored v))
-                                   (list->set (dict-ref saturations v))))))
+      (set->list (set-subtract (list->set (move-colors colored v))
+                               (list->set (dict-ref saturations v))))))
 
   (define (pick-best-color saturations colored)
     (lambda (v)
       (let ([my-move-colors ((available-move-colors saturations colored) v)])
         (if (set-member? root-vars v)
-          (if (null? my-move-colors)
-              (let ([sorted (sort (filter (lambda (e) (< e reg-num-start) (dict-ref saturations v)) >))])
-                (foldl (lambda (n maximum)
-                         (cond
-                           [(< maximum n) maximum]
-                           [(= maximum n) (- n 1)]
-                           [(> maximum n) maximum]))
-                       (- reg-num-start 1)
-                       sorted))
-              (max my-move-colors))
-          (if (null? my-move-colors)
-              (let ([sorted (sort (filter (compose not negative?) (dict-ref saturations v)) <)])
-                (foldl (lambda (n minimum)
-                         (cond
-                           [(< minimum n) minimum]
-                           [(= minimum n) (+ n 1)]
-                           [(> minimum n) minimum]))
-                       0
-                       sorted))
-              (min my-move-colors))))))
+            (if (null? my-move-colors)
+                (let ([sorted (sort (filter (lambda (e)
+                                              (< e reg-num-start)
+                                              (dict-ref saturations v))
+                                            >))])
+                  (foldl (lambda (n maximum)
+                           (cond
+                             [(< maximum n) maximum]
+                             [(= maximum n) (- n 1)]
+                             [(> maximum n) maximum]))
+                         (- reg-num-start 1)
+                         sorted))
+                (max my-move-colors))
+            (if (null? my-move-colors)
+                (let ([sorted (sort (filter (compose not negative?) (dict-ref saturations v)) <)])
+                  (foldl (lambda (n minimum)
+                           (cond
+                             [(< minimum n) minimum]
+                             [(= minimum n) (+ n 1)]
+                             [(> minimum n) minimum]))
+                         0
+                         sorted))
+                (min my-move-colors))))))
 
   (define (assign-color! saturations)
     (lambda (colored v)
@@ -982,7 +990,7 @@
 
 (define (num->mem n)
   (cond
-    [(< n reg-num-start) (Deref 'r15 (* 8 (- (+ reg-num-start (- n)) 1)))]
+    [(< n reg-num-start) (Deref 'r15 (* -8 (- reg-num-start n)))]
     [(< n reg-num-end) (Reg (dict-ref num-reg n))]
     [else (Deref 'rbp (* -8 (- n (- reg-num-end 1))))]))
 
@@ -1015,31 +1023,33 @@
                         (if (>= num-color reg-num-end) (- num-color (- reg-num-end 1)) 0))])
     (* 8 num-on-stack)))
 
-
-
 ;; allocate-registers : pseudo-x86 -> pseudo-x86
 (define (allocate-registers p)
   (match p
     [(X86Program info blocks)
-     (let ([colored (color-graph (dict-ref info 'conflict) (dict-ref info 'move-relation) (dict-ref info 'root-vars))])
-       (X86Program (dict-set (dict-set (dict-set info 'stack-space (stack-size colored))
-                             'used-callee
-                             (filter (lambda (r) (set-member? callee-save r))
-                                     (map (lambda (num) (hash-ref num-reg num))
-                                          (filter (lambda (num)
-                                                    (and (not (negative? num)) (< num reg-num-end)))
-                                                  (dict-values colored)))))
-                             'num-root-spills (- reg-num-start (apply min (hash-values colored))))
-                   (dict-map/copy blocks
-                                  (lambda (label block)
-                                    (values label
-                                            (Block '()
-                                                   (filter (lambda (instr)
-                                                             (match instr
-                                                               [(Instr 'nop _) #f]
-                                                               [else #t]))
-                                                           (map (assign-homes-instr colored)
-                                                                (Block-instr* block)))))))))]))
+     (let ([colored (color-graph (dict-ref info 'conflict)
+                                 (dict-ref info 'move-relation)
+                                 (dict-ref info 'root-vars))])
+       (X86Program
+        (dict-set (dict-set (dict-set info 'stack-space (stack-size colored))
+                            'used-callee
+                            (filter (lambda (r) (set-member? callee-save r))
+                                    (map (lambda (num) (hash-ref num-reg num))
+                                         (filter (lambda (num)
+                                                   (and (not (negative? num)) (< num reg-num-end)))
+                                                 (dict-values colored)))))
+                  'num-root-spills
+                  (- reg-num-start (apply min (hash-values colored))))
+        (dict-map/copy blocks
+                       (lambda (label block)
+                         (values label
+                                 (Block '()
+                                        (filter (lambda (instr)
+                                                  (match instr
+                                                    [(Instr 'nop _) #f]
+                                                    [else #t]))
+                                                (map (assign-homes-instr colored)
+                                                     (Block-instr* block)))))))))]))
 
 (define (block-has-only-prev? cfg label)
   (eq? (length (get-neighbors (transpose cfg) label)) 1))
@@ -1115,10 +1125,19 @@
                 (Instr 'subq (list (Imm (aligned-rsp-offset info)) (Reg 'rsp))))
           (for/list ([reg (dict-ref info 'used-callee)])
             (Instr 'pushq (list (Reg reg))))
+          ; initliaze rootstack and heap.
+          (flatten (list (Instr 'movq (list (Imm (runtime-config:rootstack-size)) (Reg 'rdi)))
+                         (Instr 'movq (list (Imm (runtime-config:heap-size)) (Reg 'rsi)))
+                         (Callq 'initliaze 2)
+                         (Instr 'movq (list (Global 'rootstack_begin) (Reg 'r15)))
+                         (for/list ([i (in-range 0 (dict-ref info 'num-root-spills))])
+                           (list (Instr 'movq (list (Imm 0) (Deref 'r15 (* 8 i))))
+                                 (Instr 'addq (list (Imm 8) (Reg 'r15)))))))
           (list (Jmp (cp-label 'start)))))
 
 (define (conclusion info)
-  (append (for/list ([reg (reverse (dict-ref info 'used-callee))])
+  (append (list (Instr 'subq (list (Imm (* 8 (dict-ref info 'num-root-spills))) (Reg 'r15))))
+          (for/list ([reg (reverse (dict-ref info 'used-callee))])
             (Instr 'popq (list (Reg reg))))
           (list (Instr 'addq (list (Imm (aligned-rsp-offset info)) (Reg 'rsp)))
                 (Instr 'popq (list (Reg 'rbp)))
@@ -1149,8 +1168,8 @@
     ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ("build interference" ,build-interference ,interp-pseudo-x86-2)
     ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
-    ("remove jumps" ,remove-jumps , interp-pseudo-x86-2)
+    ("remove jumps" ,remove-jumps ,interp-pseudo-x86-2)
     ("patch instructions" ,patch-instructions ,interp-x86-2)
-    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-2)
     ; ))
     ))
