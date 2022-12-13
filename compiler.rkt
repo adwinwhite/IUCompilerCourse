@@ -284,6 +284,37 @@
      (define func-name-dict (map (lambda (n) (cons n n)) func-names))
      (ProgramDefs info (map (uniquify-def func-name-dict) defs))]))
 
+(define (reveal-functions-exp exp)
+  (match exp
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Bool b) (Bool b)]
+    [(Void) (Void)]
+    [(Let x e body) (Let x (reveal-functions-exp e) (reveal-functions-exp body))]
+    [(Prim op es)
+     (Prim op
+           (for/list ([e es])
+             (reveal-functions-exp e)))]
+    [(If cnd thn els)
+     (If (reveal-functions-exp cnd) (reveal-functions-exp thn) (reveal-functions-exp els))]
+    [(SetBang var exp) (SetBang var (reveal-functions-exp exp))]
+    [(Begin es body) (Begin (map reveal-functions-exp es) (reveal-functions-exp body))]
+    [(WhileLoop cnd body) (WhileLoop (reveal-functions-exp cnd) (reveal-functions-exp body))]
+    [(HasType exp t) (HasType (reveal-functions-exp exp) t)]
+    [(Apply (Var fname) args) (Apply (FunRef fname (length args)) (map reveal-functions-exp args))]))
+
+(define (reveal-functions-def def)
+  (match def
+    [(Def name params rt info body)
+     (Def name params rt info (reveal-functions-exp body))]))
+
+
+;; reveal-functions 
+(define (reveal-functions p)
+  (match p
+    [(ProgramDefs info defs)
+     (ProgramDefs info (map reveal-functions-def defs))]))
+
 (define (gentmp)
   (gensym 'tmp))
 
@@ -1187,6 +1218,7 @@
   ; ("partial evaluator" ,pe-Lfun ,interp-Lfun ,type-check-Lfun)
   `(("shrink" ,shrink ,interp-Lfun ,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
+    ("reveal functions" ,reveal-functions ,interp-Lfun-prime ,type-check-Lfun)
     ; ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
