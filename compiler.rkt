@@ -1128,7 +1128,7 @@
           ; initliaze rootstack and heap.
           (flatten (list (Instr 'movq (list (Imm (runtime-config:rootstack-size)) (Reg 'rdi)))
                          (Instr 'movq (list (Imm (runtime-config:heap-size)) (Reg 'rsi)))
-                         (Callq 'initliaze 2)
+                         (Callq 'initialize 2)
                          (Instr 'movq (list (Global 'rootstack_begin) (Reg 'r15)))
                          (for/list ([i (in-range 0 (dict-ref info 'num-root-spills))])
                            (list (Instr 'movq (list (Imm 0) (Deref 'r15 (* 8 i))))
