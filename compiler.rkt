@@ -5,12 +5,12 @@
          racket/stream)
 (require racket/fixnum)
 (require "multigraph.rkt")
-(require "interp-Lvec.rkt")
-(require "interp-Lvec-prime.rkt")
-(require "interp-Cvec.rkt")
+(require "interp-Lfun.rkt")
+(require "interp-Lfun-prime.rkt")
+(require "interp-Cfun.rkt")
 (require "interp.rkt")
-(require "type-check-Lvec.rkt")
-(require "type-check-Cvec.rkt")
+(require "type-check-Lfun.rkt")
+(require "type-check-Cfun.rkt")
 (require "utilities.rkt")
 (require "priority_queue.rkt")
 (require (prefix-in runtime-config: "runtime-config.rkt"))
@@ -201,7 +201,7 @@
     [(If cnd thn els) (pe-if (pe-exp cnd) (pe-exp thn) (pe-exp els))]
     [else e]))
 
-(define (pe-Lvec p)
+(define (pe-Lfun p)
   (match p
     [(Program info e) (Program info (pe-exp e))]))
 
@@ -216,7 +216,9 @@
 
 (define (shrink p)
   (match p
-    [(Program info e) (Program info (shrink-logical e))]))
+    [(ProgramDefsExp info defs e) 
+     (ProgramDefs info (cons (Def 'main '() 'Integer '() (shrink-logical e))
+                             defs))]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
@@ -297,7 +299,7 @@
     [(WhileLoop cnd body) (WhileLoop (expose-allocation-exp cnd) (expose-allocation-exp body))]
     [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]))
 
-;; expose-allocation : Lvec -> Lvec
+;; expose-allocation : Lfun -> Lfun
 (define (expose-allocation p)
   (match p
     [(Program info e) (Program info (expose-allocation-exp e))]))
@@ -1157,19 +1159,20 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
-  `(("partial evaluator" ,pe-Lvec ,interp-Lvec ,type-check-Lvec)
-    ("shrink" ,shrink ,interp-Lvec ,type-check-Lvec)
-    ("uniquify" ,uniquify ,interp-Lvec ,type-check-Lvec)
-    ("expose allocation" ,expose-allocation ,interp-Lvec-prime ,type-check-Lvec)
-    ("uncover get!" ,uncover-getbang ,interp-Lvec-prime ,type-check-Lvec)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime ,type-check-Lvec)
-    ("explicate control" ,explicate-control ,interp-Cvec ,type-check-Cvec)
-    ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-    ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-    ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
-    ("remove jumps" ,remove-jumps ,interp-pseudo-x86-2)
-    ("patch instructions" ,patch-instructions ,interp-x86-2)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-2)
+  `(
+    ; ("partial evaluator" ,pe-Lfun ,interp-Lfun ,type-check-Lfun)
+    ("shrink" ,shrink ,interp-Lfun ,type-check-Lfun)
+    ; ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
+    ; ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
+    ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
+    ; ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
+    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+    ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+    ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
+    ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
+    ; ("remove jumps" ,remove-jumps ,interp-pseudo-x86-2)
+    ; ("patch instructions" ,patch-instructions ,interp-x86-2)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-2)
     ; ))
     ))

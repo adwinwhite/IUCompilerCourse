@@ -2,11 +2,11 @@
 #lang racket
 
 (require "utilities.rkt")
-(require "interp-Lvec-prime.rkt")
-(require "interp-Cvec.rkt")
+(require "interp-Lfun.rkt")
+(require "interp-Cfun.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
-(require "type-check-Lvec.rkt")
+(require "type-check-Lfun.rkt")
 (debug-level 1)
 ;; (AST-output-syntax 'concrete-syntax)
 
@@ -25,8 +25,8 @@
           (string=? r (car (string-split p "_"))))
         all-tests)))
 
-(interp-tests "vec" type-check-Lvec compiler-passes interp-Lvec-prime "vectors_test" (tests-for "vectors"))
+(interp-tests "fun" type-check-Lfun compiler-passes interp-Lfun "functions_test" (tests-for "functions"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-(compiler-tests "vec" type-check-Lvec compiler-passes "vectors_test" (tests-for "vectors"))
+;; (compiler-tests "vec" type-check-Lfun compiler-passes "functions_test" (tests-for "functions"))
