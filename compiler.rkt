@@ -216,22 +216,14 @@
 
 (define (shrink p)
   (match p
-    [(ProgramDefsExp info defs e) 
-     (ProgramDefs info (cons (Def 'main '() 'Integer '() (shrink-logical e))
-                             defs))]))
+    [(ProgramDefsExp info defs e)
+     (ProgramDefs info (cons (Def 'main '() 'Integer '() (shrink-logical e)) defs))]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(define (uniquify-name env)
-  (lambda (x)
-    (string->symbol
-     (string-append (symbol->string x)
-                    (number->string
-                     (add1 (if (dict-has-key? env x)
-                               (string->number (substring (symbol->string (dict-ref env x))
-                                                          (string-length (symbol->string x))))
-                               0)))))))
+(define ((uniquify-name env) x)
+  (gensym x))
 
 (define (uniquify-exp env)
   (lambda (e)
@@ -252,12 +244,45 @@
       [(SetBang var exp) (SetBang (dict-ref env var) ((uniquify-exp env) exp))]
       [(Begin es body) (Begin (map (uniquify-exp env) es) ((uniquify-exp env) body))]
       [(WhileLoop cnd body) (WhileLoop ((uniquify-exp env) cnd) ((uniquify-exp env) body))]
-      [(HasType exp t) (HasType ((uniquify-exp env) exp) t)])))
+      [(HasType exp t) (HasType ((uniquify-exp env) exp) t)]
+      [(Apply f args) (Apply ((uniquify-exp env) f) (map (uniquify-exp env) args))])))
+
+(define (param->pair p)
+  (match p
+    [`(,x : ,t) (values x t)]))
+
+(define (pair->param x t)
+  `(,x : ,t))
+
+(define ((uniquify-params env) params)
+  (foldl (lambda (p new-env)
+           (define-values (x t) (param->pair p))
+           (dict-set new-env x ((uniquify-name new-env) x)))
+         env
+         params))
+
+(define ((uniquify-def env) def)
+  (match def
+    [(Def name params rt info body)
+     (define unique-env-mapping ((uniquify-params env) params))
+     (Def name
+          (for/list ([p params])
+            (define-values (x t) (param->pair p))
+            (pair->param (dict-ref unique-env-mapping x) t))
+          rt
+          info
+          ((uniquify-exp unique-env-mapping) body))]))
+
+(define (extract-func-name defs)
+  (map Def-name defs))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
-    [(Program info e) (Program info ((uniquify-exp '()) e))]))
+    [(ProgramDefs info defs)
+     (define func-names (extract-func-name defs))
+     (define func-name-dict (map (lambda (n) (cons n n)) func-names))
+     (ProgramDefs info (map (uniquify-def func-name-dict) defs))]))
 
 (define (gentmp)
   (gensym 'tmp))
@@ -1159,10 +1184,9 @@
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
 (define compiler-passes
-  `(
-    ; ("partial evaluator" ,pe-Lfun ,interp-Lfun ,type-check-Lfun)
-    ("shrink" ,shrink ,interp-Lfun ,type-check-Lfun)
-    ; ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
+  ; ("partial evaluator" ,pe-Lfun ,interp-Lfun ,type-check-Lfun)
+  `(("shrink" ,shrink ,interp-Lfun ,type-check-Lfun)
+    ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
     ; ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
