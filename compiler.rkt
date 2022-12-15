@@ -16,6 +16,8 @@
 (require (prefix-in runtime-config: "runtime-config.rkt"))
 (provide (all-defined-out))
 
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lint examples
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -40,6 +42,9 @@
     [(HasType exp t) (HasType (transf exp) t)]
     [(Apply f args) (Apply (transf f) (map transf args))]
     [(FunRef fname arity) (FunRef fname arity)]
+    [(GlobalValue label) (GlobalValue label)]
+    [(Collect bytes) (Collect bytes)]
+    [(Allocate num types) (Allocate num types)]
     ))
 
 
@@ -415,17 +420,16 @@
     [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]
     [else ((transform-ast expose-allocation-exp) exp)]))
 
-(define (expose-allocation-def def)
-  (match def
-    [(Def name params rt info body)
-     (Def name params rt info (expose-allocation-exp body))]))
-
 
 ;; expose-allocation : Lfun -> Lfun
 (define (expose-allocation p)
   (match p
     [(ProgramDefs info defs)
-     (ProgramDefs info (map expose-allocation-def defs))]))
+     (ProgramDefs info (map (lambda (d)
+                              (struct-copy Def d
+                                           [body (expose-allocation-exp (Def-body d))]))
+                            defs))]))
+                                 
 
 (define (collect-setbang e)
   (match e
@@ -441,32 +445,43 @@
     [(WhileLoop cnd body) (set-union (collect-setbang cnd) (collect-setbang body))]
     [else (set)]))
 
+; (define ((uncover-get-exp mutable-vars) e)
+  ; (define (mut->getbang x)
+    ; (if (set-member? mutable-vars x) (GetBang x) (Var x)))
+  ; (match e
+    ; [(Var x) (mut->getbang x)]
+    ; [(Int n) (Int n)]
+    ; [(Bool b) (Bool b)]
+    ; [(Void) (Void)]
+    ; [(Let x exp body)
+     ; (Let x ((uncover-get-exp mutable-vars) exp) ((uncover-get-exp mutable-vars) body))]
+    ; [(Prim op es) (Prim op (map (uncover-get-exp mutable-vars) es))]
+    ; [(If cnd thn els)
+     ; (If ((uncover-get-exp mutable-vars) cnd)
+         ; ((uncover-get-exp mutable-vars) thn)
+         ; ((uncover-get-exp mutable-vars) els))]
+    ; [(SetBang var exp) (SetBang var ((uncover-get-exp mutable-vars) exp))]
+    ; [(Begin es body)
+     ; (Begin (map (uncover-get-exp mutable-vars) es) ((uncover-get-exp mutable-vars) body))]
+    ; [(WhileLoop cnd body)
+     ; (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]
+    ; [else e]))
 (define ((uncover-get-exp mutable-vars) e)
   (define (mut->getbang x)
     (if (set-member? mutable-vars x) (GetBang x) (Var x)))
   (match e
     [(Var x) (mut->getbang x)]
-    [(Int n) (Int n)]
-    [(Bool b) (Bool b)]
-    [(Void) (Void)]
-    [(Let x exp body)
-     (Let x ((uncover-get-exp mutable-vars) exp) ((uncover-get-exp mutable-vars) body))]
-    [(Prim op es) (Prim op (map (uncover-get-exp mutable-vars) es))]
-    [(If cnd thn els)
-     (If ((uncover-get-exp mutable-vars) cnd)
-         ((uncover-get-exp mutable-vars) thn)
-         ((uncover-get-exp mutable-vars) els))]
-    [(SetBang var exp) (SetBang var ((uncover-get-exp mutable-vars) exp))]
-    [(Begin es body)
-     (Begin (map (uncover-get-exp mutable-vars) es) ((uncover-get-exp mutable-vars) body))]
-    [(WhileLoop cnd body)
-     (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]
-    [else e]))
+    [else ((transform-ast (uncover-get-exp mutable-vars)) e)]))
 
 ;; uncover-get!: Lwhile->Lwhile
 (define (uncover-getbang p)
   (match p
-    [(Program info e) (Program info ((uncover-get-exp (collect-setbang e)) e))]))
+    [(ProgramDefs info defs)
+     (ProgramDefs info (map (lambda (d)
+                              (define body (Def-body d))
+                              (struct-copy Def d
+                                           [body ((uncover-get-exp (collect-setbang body)) body)]))
+                            defs))]))
 
 (define remove-complex-opera-exp
   (lambda (e)
@@ -1288,7 +1303,7 @@
     ("reveal functions" ,reveal-functions ,interp-Lfun-prime ,type-check-Lfun)
     ("limit functions" ,limit-functions ,interp-Lfun-prime ,type-check-Lfun)
     ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
-    ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
+    ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
     ; ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
