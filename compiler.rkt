@@ -412,26 +412,20 @@
 
 (define (expose-allocation-exp exp)
   (match exp
-    [(Var x) (Var x)]
-    [(Int n) (Int n)]
-    [(Bool b) (Bool b)]
-    [(Void) (Void)]
-    [(Let x e body) (Let x (expose-allocation-exp e) (expose-allocation-exp body))]
-    [(Prim op es)
-     (Prim op
-           (for/list ([e es])
-             (expose-allocation-exp e)))]
-    [(If cnd thn els)
-     (If (expose-allocation-exp cnd) (expose-allocation-exp thn) (expose-allocation-exp els))]
-    [(SetBang var exp) (SetBang var (expose-allocation-exp exp))]
-    [(Begin es body) (Begin (map expose-allocation-exp es) (expose-allocation-exp body))]
-    [(WhileLoop cnd body) (WhileLoop (expose-allocation-exp cnd) (expose-allocation-exp body))]
-    [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]))
+    [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]
+    [else ((transform-ast expose-allocation-exp) exp)]))
+
+(define (expose-allocation-def def)
+  (match def
+    [(Def name params rt info body)
+     (Def name params rt info (expose-allocation-exp body))]))
+
 
 ;; expose-allocation : Lfun -> Lfun
 (define (expose-allocation p)
   (match p
-    [(Program info e) (Program info (expose-allocation-exp e))]))
+    [(ProgramDefs info defs)
+     (ProgramDefs info (map expose-allocation-def defs))]))
 
 (define (collect-setbang e)
   (match e
@@ -1293,7 +1287,7 @@
     ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
     ("reveal functions" ,reveal-functions ,interp-Lfun-prime ,type-check-Lfun)
     ("limit functions" ,limit-functions ,interp-Lfun-prime ,type-check-Lfun)
-    ; ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
+    ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
     ; ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
