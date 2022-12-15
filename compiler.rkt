@@ -20,6 +20,29 @@
 ;; Lint examples
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(define ((transform-ast f) exp)
+  (define transf (transform-ast f))
+  (match exp
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Bool b) (Bool b)]
+    [(Void) (Void)]
+    [(Let x e body) (Let x (transf e) (transf body))]
+    [(Prim op es)
+     (Prim op
+           (for/list ([e es])
+             (transf e)))]
+    [(If cnd thn els)
+     (If (transf cnd) (transf thn) (transf els))]
+    [(SetBang var exp) (SetBang var (transf exp))]
+    [(Begin es body) (Begin (map transf es) (transf body))]
+    [(WhileLoop cnd body) (WhileLoop (transf cnd) (transf body))]
+    [(HasType exp t) (HasType (transf exp) t)]
+    [(Apply f args) (Apply (transf f) (map transf args))]
+    [(FunRef fname arity) (FunRef fname arity)]
+    ))
+
+
 ;; The following compiler pass is just a silly one that doesn't change
 ;; anything important, but is nevertheless an example of a pass. It
 ;; flips the arguments of +. -Jeremy
@@ -249,14 +272,16 @@
 
 (define (param->pair p)
   (match p
-    [`(,x : ,t) (values x t)]))
+    [`(,x : ,t) (cons x t)]))
 
 (define (pair->param x t)
   `(,x : ,t))
 
 (define ((uniquify-params env) params)
   (foldl (lambda (p new-env)
-           (define-values (x t) (param->pair p))
+           (define param-pair (param->pair p))
+           (define x (car param-pair))
+           (define t (cdr param-pair))
            (dict-set new-env x ((uniquify-name new-env) x)))
          env
          params))
@@ -267,7 +292,8 @@
      (define unique-env-mapping ((uniquify-params env) params))
      (Def name
           (for/list ([p params])
-            (define-values (x t) (param->pair p))
+            (define-values (x t) (let ([pair (param->pair p)])
+                                   (values (car pair) (cdr pair))))
             (pair->param (dict-ref unique-env-mapping x) t))
           rt
           info
@@ -314,6 +340,53 @@
   (match p
     [(ProgramDefs info defs)
      (ProgramDefs info (map reveal-functions-def defs))]))
+
+(define ((limit-func-exp param-names tuple-name) exp)
+  (match exp
+    [(Var x) #:when (member x param-names)
+             (Prim 'vector-ref (list (Var tuple-name) (Int (index-of param-names x))))]
+    [else ((transform-ast (limit-func-exp param-names tuple-name)) exp)]))
+
+
+;; Change function signature and argument references in body.
+(define (limit-func-def def)
+  (match def
+    [(Def name params rt info body)
+     (define tuple-name (gensym 'param-tuple))
+     (define tuple-types (let ([ts (map (compose cdr param->pair) (list-tail params 5))])
+                           `(Vector ,@ts)))
+     (define param-names (map (compose car param->pair) (list-tail params 5)))
+     (Def name (append (take params 5)
+                       (list `(,tuple-name : ,tuple-types)))
+          rt
+          info
+          ((limit-func-exp param-names tuple-name) body))]))
+
+
+;; transform function call with >=6 arguments into using tuple.
+(define (limit-func-call exp)
+  (match exp
+    [(Apply (FunRef fname arity) args) 
+     (if (> arity 6)
+       (Apply (FunRef fname arity) (append (take args 6) (list (Prim 'vector (drop args 6)))))
+       exp)]
+    [else ((transform-ast limit-func-call) exp)]))
+
+
+(define (limit-func def)
+  (match def
+    [(Def name params rt info body)
+     (if (> (length params) 6)
+       (limit-func-def (Def name params rt info (limit-func-call body)))
+       (Def name params rt info (limit-func-call body)))]))
+
+
+
+(define (limit-functions p)
+  (match p
+    [(ProgramDefs info defs)
+     (ProgramDefs info (map limit-func defs))]))
+
 
 (define (gentmp)
   (gensym 'tmp))
@@ -1219,6 +1292,7 @@
   `(("shrink" ,shrink ,interp-Lfun ,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun ,type-check-Lfun)
     ("reveal functions" ,reveal-functions ,interp-Lfun-prime ,type-check-Lfun)
+    ("limit functions" ,limit-functions ,interp-Lfun-prime ,type-check-Lfun)
     ; ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ; ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
