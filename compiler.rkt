@@ -698,6 +698,8 @@
   (let* ([ts (cdr ts)] [len (length ts)])
     (arithmetic-shift (bitwise-ior (arithmetic-shift (generate-pointer-mask ts) 6) len) 1)))
 
+(define argu-regs '(rdi rsi rdx rcx r8 r9))
+
 (define (stmt->instrs s)
   (match s
     [(Assign x exp)
@@ -745,6 +747,12 @@
               (Instr 'movq (list (Imm (generate-tag ts)) (Deref 'r11 0)))
               (Instr 'movq (list (Reg 'r11) x)))]
        [(GlobalValue var) (list (Instr 'movq (list (Global var) x)))]
+       [(FunRef fname arity) (list (Instr 'leaq (list (Global fname) x)))]
+       [(Call fref args) (append
+                           (for/list ([i (in-range (length args))])
+                                     (Instr 'movq (list (atm->args (list-ref args i)) (Reg (list-ref argu-regs i)))))
+                           (list (IndirectCallq fref (length args))
+                                 (Instr 'movq (list (Reg 'rax) x))))]
        [else (error "unhandled expression in assignment statement" exp)])]
     [(Prim 'read '()) (list (Callq 'read_int 0))]
     [(Prim 'vector-set! (list vec (Int i) atm))
@@ -763,15 +771,38 @@
      (list (Instr 'cmpq (list (atm->args e2) (atm->args e1)))
            (JmpIf (dict-ref cmp-op-cc op) label1)
            (Jmp label2))]
-    [(Seq fst snd) (append (stmt->instrs fst) (tail->instrs snd))]))
+    [(Seq fst snd) (append (stmt->instrs fst) (tail->instrs snd))]
+    [(TailCall fref args) (append
+                           (for/list ([i (in-range (length args))])
+                                     (Instr 'movq (list (atm->args (list-ref args i)) (Reg (list-ref argu-regs i)))))
+                           (list (TailJmp fref (length args))))]))
+
+
+(define (eliminate-params def)
+  (match def
+    [(Def name params rt info body)
+     (define start-block-label (symbol-append name (cp-label 'start)))
+     (define new-start-instrs (append
+                               (for/list ([i (in-range (length params))])
+                                         (Instr 'movq (list (Reg (list-ref argu-regs i)) (Var (car (param->pair (list-ref params i)))))))
+                               (Block-instr* (dict-ref body start-block-label))))
+     (Def name '() rt (dict-set info 'num-params (length params)) (dict-set body start-block-label (Block '() new-start-instrs)))]))
 
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
   (match p
-    [(CProgram info blocks)
-     (X86Program
+    [(ProgramDefs info defs)
+     (ProgramDefs 
       info
-      (dict-map/copy blocks (lambda (label tail) (values label (Block '() (tail->instrs tail))))))]))
+      (map (compose eliminate-params (lambda (d)
+             (define body (Def-body d))
+             (struct-copy
+              Def
+              d
+              [body
+                (for/list ([(label tail) (in-dict body)])
+                          (cons label (Block '() (tail->instrs tail))))])))
+           defs))]))
 
 (define (filter-static s)
   (list->set (filter (lambda (e)
@@ -1313,12 +1344,12 @@
     ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
     ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
-    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-    ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-    ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-2)
-    ; ("remove jumps" ,remove-jumps ,interp-pseudo-x86-2)
-    ; ("patch instructions" ,patch-instructions ,interp-x86-2)
-    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-2)
+    ("instruction selection" ,select-instructions ,interp-pseudo-x86-3)
+    ; ("uncover live" ,uncover-live ,interp-pseudo-x86-3)
+    ; ("build interference" ,build-interference ,interp-pseudo-x86-3)
+    ; ("allocate registers" ,allocate-registers ,interp-pseudo-x86-3)
+    ; ("remove jumps" ,remove-jumps ,interp-pseudo-x86-3)
+    ; ("patch instructions" ,patch-instructions ,interp-x86-3)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-3)
     ; ))
     ))
