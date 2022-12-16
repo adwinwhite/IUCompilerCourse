@@ -22,25 +22,23 @@
 ;; Lint examples
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; f: exp -> exp
 (define ((transform-ast f) exp)
-  (define transf (transform-ast f))
   (match exp
     [(Var x) (Var x)]
     [(Int n) (Int n)]
     [(Bool b) (Bool b)]
     [(Void) (Void)]
-    [(Let x e body) (Let x (transf e) (transf body))]
+    [(Let x e body) (Let x (f e) (f body))]
     [(Prim op es)
-     (Prim op
-           (for/list ([e es])
-             (transf e)))]
+     (Prim op (map f es))]
     [(If cnd thn els)
-     (If (transf cnd) (transf thn) (transf els))]
-    [(SetBang var exp) (SetBang var (transf exp))]
-    [(Begin es body) (Begin (map transf es) (transf body))]
-    [(WhileLoop cnd body) (WhileLoop (transf cnd) (transf body))]
-    [(HasType exp t) (HasType (transf exp) t)]
-    [(Apply f args) (Apply (transf f) (map transf args))]
+     (If (f cnd) (f thn) (f els))]
+    [(SetBang var exp) (SetBang var (f exp))]
+    [(Begin es body) (Begin (map f es) (f body))]
+    [(WhileLoop cnd body) (WhileLoop (f cnd) (f body))]
+    [(HasType exp t) (HasType (f exp) t)]
+    [(Apply fexp args) (Apply (f fexp) (map f args))]
     [(FunRef fname arity) (FunRef fname arity)]
     [(GlobalValue label) (GlobalValue label)]
     [(Collect bytes) (Collect bytes)]
@@ -350,7 +348,8 @@
   (match exp
     [(Var x) #:when (member x param-names)
              (Prim 'vector-ref (list (Var tuple-name) (Int (index-of param-names x))))]
-    [else ((transform-ast (limit-func-exp param-names tuple-name)) exp)]))
+    [else 
+      ((transform-ast (limit-func-exp param-names tuple-name)) exp)]))
 
 
 ;; Change function signature and argument references in body.
@@ -361,6 +360,7 @@
      (define tuple-types (let ([ts (map (compose cdr param->pair) (list-tail params 5))])
                            `(Vector ,@ts)))
      (define param-names (map (compose car param->pair) (list-tail params 5)))
+     (println param-names)
      (Def name (append (take params 5)
                        (list `(,tuple-name : ,tuple-types)))
           rt
@@ -373,7 +373,7 @@
   (match exp
     [(Apply (FunRef fname arity) args) 
      (if (> arity 6)
-       (Apply (FunRef fname arity) (append (take args 6) (list (Prim 'vector (drop args 6)))))
+       (Apply (FunRef fname arity) (append (take args 5) (list (Prim 'vector (drop args 5)))))
        exp)]
     [else ((transform-ast limit-func-call) exp)]))
 
@@ -445,27 +445,6 @@
     [(WhileLoop cnd body) (set-union (collect-setbang cnd) (collect-setbang body))]
     [else (set)]))
 
-; (define ((uncover-get-exp mutable-vars) e)
-  ; (define (mut->getbang x)
-    ; (if (set-member? mutable-vars x) (GetBang x) (Var x)))
-  ; (match e
-    ; [(Var x) (mut->getbang x)]
-    ; [(Int n) (Int n)]
-    ; [(Bool b) (Bool b)]
-    ; [(Void) (Void)]
-    ; [(Let x exp body)
-     ; (Let x ((uncover-get-exp mutable-vars) exp) ((uncover-get-exp mutable-vars) body))]
-    ; [(Prim op es) (Prim op (map (uncover-get-exp mutable-vars) es))]
-    ; [(If cnd thn els)
-     ; (If ((uncover-get-exp mutable-vars) cnd)
-         ; ((uncover-get-exp mutable-vars) thn)
-         ; ((uncover-get-exp mutable-vars) els))]
-    ; [(SetBang var exp) (SetBang var ((uncover-get-exp mutable-vars) exp))]
-    ; [(Begin es body)
-     ; (Begin (map (uncover-get-exp mutable-vars) es) ((uncover-get-exp mutable-vars) body))]
-    ; [(WhileLoop cnd body)
-     ; (WhileLoop ((uncover-get-exp mutable-vars) cnd) ((uncover-get-exp mutable-vars) body))]
-    ; [else e]))
 (define ((uncover-get-exp mutable-vars) e)
   (define (mut->getbang x)
     (if (set-member? mutable-vars x) (GetBang x) (Var x)))
@@ -483,11 +462,25 @@
                                            [body ((uncover-get-exp (collect-setbang body)) body)]))
                             defs))]))
 
+;; mapping: (int -> atm) where 0 -> fname.
+;; call -> exp
+(define ((atomify-func-call args) mapping nth)
+  (if (eq? nth (length args))
+    (Apply (dict-ref mapping 0) (map (lambda (i)
+                                       (dict-ref mapping i))
+                                     (range 1 (length args))))
+    (if (atm? (list-ref args nth))
+      (let ([new-map (dict-set mapping nth (list-ref args nth))])
+        ((atomify-func-call args) new-map (+ nth 1)))
+      (let* ([tmp-arg (gensym 'farg)]
+            [new-map (dict-set mapping nth (Var tmp-arg))])
+        (Let tmp-arg (list-ref args nth)
+             ((atomify-func-call args) new-map (+ nth 1)))))))
+
 (define remove-complex-opera-exp
   (lambda (e)
     (match e
       [(GetBang x) (Var x)]
-      [(Let x e body) (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
       [(Prim op (list e))
        (if (atm? e)
            (Prim op (list e))
@@ -514,23 +507,22 @@
               (Let tmpexp
                    (remove-complex-opera-exp e2)
                    (Prim 'vector-set! (list (Var tmpvec) (Int i) (Var tmpexp))))))]
-      [(If cnd thn els)
-       (If (remove-complex-opera-exp cnd)
-           (remove-complex-opera-exp thn)
-           (remove-complex-opera-exp els))]
       [(SetBang var exp)
        (if (atm? exp)
            e
            (let ([tmp (gentmp)]) (Let tmp (remove-complex-opera-exp exp) (SetBang var (Var tmp)))))]
-      [(Begin es body) (Begin (map remove-complex-opera-exp es) (remove-complex-opera-exp body))]
-      [(WhileLoop cnd body)
-       (WhileLoop (remove-complex-opera-exp cnd) (remove-complex-opera-exp body))]
-      [else e])))
+      [(Apply f args) ((atomify-func-call (cons f args)) '() 0)]
+      [else ((transform-ast remove-complex-opera-exp) e)])))
 
 ;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
   (match p
-    [(Program info e) (Program info (remove-complex-opera-exp e))]))
+    [(ProgramDefs info defs)
+     (ProgramDefs info (map (lambda (d)
+                              (define body (Def-body d))
+                              (struct-copy Def d
+                                           [body (remove-complex-opera-exp body)]))
+                            defs))]))
 
 ;; whether the expression has side effect
 ;; do I write this expression for its side effect?
@@ -1304,7 +1296,7 @@
     ("limit functions" ,limit-functions ,interp-Lfun-prime ,type-check-Lfun)
     ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
-    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
     ; ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
