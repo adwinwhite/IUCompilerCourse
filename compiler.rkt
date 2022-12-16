@@ -470,6 +470,7 @@
 
 (define remove-complex-opera-exp
   (lambda (e)
+    (println e)
     (match e
       [(GetBang x) (Var x)]
       [(Prim op (list e))
@@ -502,7 +503,7 @@
        (if (atm? exp)
            e
            (let ([tmp (gentmp)]) (Let tmp (remove-complex-opera-exp exp) (SetBang var (Var tmp)))))]
-      [(Apply f args) ((atomify-func-call (cons f args)) '() 0)]
+      [(Apply f args) ((atomify-func-call (cons (remove-complex-opera-exp f) (map remove-complex-opera-exp args))) '() 0)]
       [else ((transform-ast remove-complex-opera-exp) e)])))
 
 ;; remove-complex-opera* : R1 -> R1
