@@ -305,6 +305,11 @@
 (define (extract-func-name defs)
   (map Def-name defs))
 
+(define (extract-func-name-and-arity defs)
+  (map (lambda (d)
+         (cons (Def-name d) (length (Def-param* d))))
+         defs))
+
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
@@ -313,36 +318,22 @@
      (define func-name-dict (map (lambda (n) (cons n n)) func-names))
      (ProgramDefs info (map (uniquify-def func-name-dict) defs))]))
 
-(define (reveal-functions-exp exp)
+(define ((reveal-functions-exp func-names-and-arity) exp)
   (match exp
-    [(Var x) (Var x)]
-    [(Int n) (Int n)]
-    [(Bool b) (Bool b)]
-    [(Void) (Void)]
-    [(Let x e body) (Let x (reveal-functions-exp e) (reveal-functions-exp body))]
-    [(Prim op es)
-     (Prim op
-           (for/list ([e es])
-             (reveal-functions-exp e)))]
-    [(If cnd thn els)
-     (If (reveal-functions-exp cnd) (reveal-functions-exp thn) (reveal-functions-exp els))]
-    [(SetBang var exp) (SetBang var (reveal-functions-exp exp))]
-    [(Begin es body) (Begin (map reveal-functions-exp es) (reveal-functions-exp body))]
-    [(WhileLoop cnd body) (WhileLoop (reveal-functions-exp cnd) (reveal-functions-exp body))]
-    [(HasType exp t) (HasType (reveal-functions-exp exp) t)]
-    [(Apply (Var fname) args) (Apply (FunRef fname (length args)) (map reveal-functions-exp args))]))
-
-(define (reveal-functions-def def)
-  (match def
-    [(Def name params rt info body)
-     (Def name params rt info (reveal-functions-exp body))]))
-
+    [(Var x) #:when (member x (dict-keys func-names-and-arity))
+             (FunRef x (dict-ref func-names-and-arity x))]
+    [else ((transform-ast (reveal-functions-exp func-names-and-arity)) exp)]))
 
 ;; reveal-functions 
 (define (reveal-functions p)
   (match p
     [(ProgramDefs info defs)
-     (ProgramDefs info (map reveal-functions-def defs))]))
+     (define func-names-and-arity (extract-func-name-and-arity defs))
+     (ProgramDefs info (map (lambda (d)
+                              (define body (Def-body d))
+                              (struct-copy Def d
+                                           [body ((reveal-functions-exp func-names-and-arity) body)]))
+                            defs))]))
 
 (define ((limit-func-exp param-names tuple-name) exp)
   (match exp
@@ -541,7 +532,9 @@
     [(WhileLoop cnd body) (and (pure-exp? cnd) (pure-exp? body))]
     [(Allocate n ts) #t]
     [(GlobalValue var) #t]
-    [(Collect bytes) #f]))
+    [(Collect bytes) #f]
+    [(FunRef fname arity) #f]
+    ))
 
 ;; create a new block with the instructions of tail.
 ;; return a single instruction `Goto label` where `label` points to the block just created.
