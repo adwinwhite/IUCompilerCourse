@@ -16,8 +16,6 @@
 (require (prefix-in runtime-config: "runtime-config.rkt"))
 (provide (all-defined-out))
 
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lint examples
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -30,10 +28,8 @@
     [(Bool b) (Bool b)]
     [(Void) (Void)]
     [(Let x e body) (Let x (f e) (f body))]
-    [(Prim op es)
-     (Prim op (map f es))]
-    [(If cnd thn els)
-     (If (f cnd) (f thn) (f els))]
+    [(Prim op es) (Prim op (map f es))]
+    [(If cnd thn els) (If (f cnd) (f thn) (f els))]
     [(SetBang var exp) (SetBang var (f exp))]
     [(Begin es body) (Begin (map f es) (f body))]
     [(WhileLoop cnd body) (WhileLoop (f cnd) (f body))]
@@ -42,9 +38,7 @@
     [(FunRef fname arity) (FunRef fname arity)]
     [(GlobalValue label) (GlobalValue label)]
     [(Collect bytes) (Collect bytes)]
-    [(Allocate num types) (Allocate num types)]
-    ))
-
+    [(Allocate num types) (Allocate num types)]))
 
 ;; The following compiler pass is just a silly one that doesn't change
 ;; anything important, but is nevertheless an example of a pass. It
@@ -295,8 +289,7 @@
      (define unique-env-mapping ((uniquify-params env) params))
      (Def name
           (for/list ([p params])
-            (define-values (x t) (let ([pair (param->pair p)])
-                                   (values (car pair) (cdr pair))))
+            (define-values (x t) (let ([pair (param->pair p)]) (values (car pair) (cdr pair))))
             (pair->param (dict-ref unique-env-mapping x) t))
           rt
           info
@@ -306,9 +299,7 @@
   (map Def-name defs))
 
 (define (extract-func-name-and-arity defs)
-  (map (lambda (d)
-         (cons (Def-name d) (length (Def-param* d))))
-         defs))
+  (map (lambda (d) (cons (Def-name d) (length (Def-param* d)))) defs))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
@@ -320,69 +311,64 @@
 
 (define ((reveal-functions-exp func-names-and-arity) exp)
   (match exp
-    [(Var x) #:when (member x (dict-keys func-names-and-arity))
-             (FunRef x (dict-ref func-names-and-arity x))]
+    [(Var x)
+     #:when (member x (dict-keys func-names-and-arity))
+     (FunRef x (dict-ref func-names-and-arity x))]
     [else ((transform-ast (reveal-functions-exp func-names-and-arity)) exp)]))
 
-;; reveal-functions 
+;; reveal-functions
 (define (reveal-functions p)
   (match p
     [(ProgramDefs info defs)
      (define func-names-and-arity (extract-func-name-and-arity defs))
-     (ProgramDefs info (map (lambda (d)
-                              (define body (Def-body d))
-                              (struct-copy Def d
-                                           [body ((reveal-functions-exp func-names-and-arity) body)]))
-                            defs))]))
+     (ProgramDefs
+      info
+      (map (lambda (d)
+             (define body (Def-body d))
+             (struct-copy Def d [body ((reveal-functions-exp func-names-and-arity) body)]))
+           defs))]))
 
 (define ((limit-func-exp param-names tuple-name) exp)
   (match exp
-    [(Var x) #:when (member x param-names)
-             (Prim 'vector-ref (list (Var tuple-name) (Int (index-of param-names x))))]
-    [else 
-      ((transform-ast (limit-func-exp param-names tuple-name)) exp)]))
-
+    [(Var x)
+     #:when (member x param-names)
+     (Prim 'vector-ref (list (Var tuple-name) (Int (index-of param-names x))))]
+    [else ((transform-ast (limit-func-exp param-names tuple-name)) exp)]))
 
 ;; Change function signature and argument references in body.
 (define (limit-func-def def)
   (match def
     [(Def name params rt info body)
      (define tuple-name (gensym 'param-tuple))
-     (define tuple-types (let ([ts (map (compose cdr param->pair) (list-tail params 5))])
-                           `(Vector ,@ts)))
+     (define tuple-types
+       (let ([ts (map (compose cdr param->pair) (list-tail params 5))]) `(Vector ,@ts)))
      (define param-names (map (compose car param->pair) (list-tail params 5)))
      (println param-names)
-     (Def name (append (take params 5)
-                       (list `(,tuple-name : ,tuple-types)))
+     (Def name
+          (append (take params 5) (list `(,tuple-name : ,tuple-types)))
           rt
           info
           ((limit-func-exp param-names tuple-name) body))]))
 
-
 ;; transform function call with >=6 arguments into using tuple.
 (define (limit-func-call exp)
   (match exp
-    [(Apply (FunRef fname arity) args) 
+    [(Apply (FunRef fname arity) args)
      (if (> arity 6)
-       (Apply (FunRef fname arity) (append (take args 5) (list (Prim 'vector (drop args 5)))))
-       exp)]
+         (Apply (FunRef fname arity) (append (take args 5) (list (Prim 'vector (drop args 5)))))
+         exp)]
     [else ((transform-ast limit-func-call) exp)]))
-
 
 (define (limit-func def)
   (match def
     [(Def name params rt info body)
      (if (> (length params) 6)
-       (limit-func-def (Def name params rt info (limit-func-call body)))
-       (Def name params rt info (limit-func-call body)))]))
-
-
+         (limit-func-def (Def name params rt info (limit-func-call body)))
+         (Def name params rt info (limit-func-call body)))]))
 
 (define (limit-functions p)
   (match p
-    [(ProgramDefs info defs)
-     (ProgramDefs info (map limit-func defs))]))
-
+    [(ProgramDefs info defs) (ProgramDefs info (map limit-func defs))]))
 
 (define (gentmp)
   (gensym 'tmp))
@@ -411,16 +397,13 @@
     [(HasType (Prim 'vector es) ts) ((create-vector '() ts) (map expose-allocation-exp es))]
     [else ((transform-ast expose-allocation-exp) exp)]))
 
-
 ;; expose-allocation : Lfun -> Lfun
 (define (expose-allocation p)
   (match p
     [(ProgramDefs info defs)
-     (ProgramDefs info (map (lambda (d)
-                              (struct-copy Def d
-                                           [body (expose-allocation-exp (Def-body d))]))
-                            defs))]))
-                                 
+     (ProgramDefs info
+                  (map (lambda (d) (struct-copy Def d [body (expose-allocation-exp (Def-body d))]))
+                       defs))]))
 
 (define (collect-setbang e)
   (match e
@@ -447,26 +430,22 @@
 (define (uncover-getbang p)
   (match p
     [(ProgramDefs info defs)
-     (ProgramDefs info (map (lambda (d)
-                              (define body (Def-body d))
-                              (struct-copy Def d
-                                           [body ((uncover-get-exp (collect-setbang body)) body)]))
-                            defs))]))
+     (ProgramDefs info
+                  (map (lambda (d)
+                         (define body (Def-body d))
+                         (struct-copy Def d [body ((uncover-get-exp (collect-setbang body)) body)]))
+                       defs))]))
 
 ;; mapping: (int -> atm) where 0 -> fname.
 ;; call -> exp
 (define ((atomify-func-call args) mapping nth)
   (if (eq? nth (length args))
-    (Apply (dict-ref mapping 0) (map (lambda (i)
-                                       (dict-ref mapping i))
-                                     (range 1 (length args))))
-    (if (atm? (list-ref args nth))
-      (let ([new-map (dict-set mapping nth (list-ref args nth))])
-        ((atomify-func-call args) new-map (+ nth 1)))
-      (let* ([tmp-arg (gensym 'farg)]
-            [new-map (dict-set mapping nth (Var tmp-arg))])
-        (Let tmp-arg (list-ref args nth)
-             ((atomify-func-call args) new-map (+ nth 1)))))))
+      (Apply (dict-ref mapping 0) (map (lambda (i) (dict-ref mapping i)) (range 1 (length args))))
+      (if (atm? (list-ref args nth))
+          (let ([new-map (dict-set mapping nth (list-ref args nth))])
+            ((atomify-func-call args) new-map (+ nth 1)))
+          (let* ([tmp-arg (gensym 'farg)] [new-map (dict-set mapping nth (Var tmp-arg))])
+            (Let tmp-arg (list-ref args nth) ((atomify-func-call args) new-map (+ nth 1)))))))
 
 (define remove-complex-opera-exp
   (lambda (e)
@@ -503,18 +482,21 @@
        (if (atm? exp)
            e
            (let ([tmp (gentmp)]) (Let tmp (remove-complex-opera-exp exp) (SetBang var (Var tmp)))))]
-      [(Apply f args) ((atomify-func-call (cons (remove-complex-opera-exp f) (map remove-complex-opera-exp args))) '() 0)]
+      [(Apply f args)
+       ((atomify-func-call (cons (remove-complex-opera-exp f) (map remove-complex-opera-exp args)))
+        '()
+        0)]
       [else ((transform-ast remove-complex-opera-exp) e)])))
 
 ;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
   (match p
     [(ProgramDefs info defs)
-     (ProgramDefs info (map (lambda (d)
-                              (define body (Def-body d))
-                              (struct-copy Def d
-                                           [body (remove-complex-opera-exp body)]))
-                            defs))]))
+     (ProgramDefs info
+                  (map (lambda (d)
+                         (define body (Def-body d))
+                         (struct-copy Def d [body (remove-complex-opera-exp body)]))
+                       defs))]))
 
 ;; whether the expression has side effect
 ;; do I write this expression for its side effect?
@@ -534,7 +516,11 @@
     [(Allocate n ts) #t]
     [(GlobalValue var) #t]
     [(Collect bytes) #f]
-    [(FunRef fname arity) #f]
+    [(FunRef fname arity) #t]
+    ;; Need to check function body.
+    ;; Be conversative. Just set it to non pure.
+    [(Apply f args) #f]
+    ; [(Apply f args) (and (pure-exp? f) (andmap pure-exp? args))]
     ))
 
 ;; create a new block with the instructions of tail.
@@ -575,6 +561,8 @@
       [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
       [(Allocate n ts) (Seq (Assign (Var x) (Allocate n ts)) cont)]
       [(GlobalValue var) (Seq (Assign (Var x) (GlobalValue var)) cont)]
+      [(FunRef fname arity) (Seq (Assign (Var x) (FunRef fname arity)) cont)]
+      [(Apply fref args) (Seq (Assign (Var x) (Call fref args)) cont)]
       [else (error "explicate-assign unhandled case" e)])))
 
 ;; exp -> tail
@@ -592,6 +580,8 @@
       [(If cnd thn els)
        ((explicate-pred blocks) cnd ((explicate-tail blocks) thn) ((explicate-tail blocks) els))]
       [(Prim op atms) (Return (Prim op atms))]
+      [(FunRef fname arity) (Return (FunRef fname arity))]
+      [(Apply fref args) (TailCall fref args)]
       [else (error "explicate-tail unhandled case" e)])))
 
 ;; (exp-bool, tail, tail) -> tail
@@ -617,6 +607,9 @@
                                   ((explicate-pred blocks) thn-inn outer-thn outer-els)
                                   ((explicate-pred blocks) els-inn outer-thn outer-els)))]
       [(Begin es body) ((explicate-begin blocks) es ((explicate-pred blocks) body thn els))]
+      [(Apply fref args)
+       (let ([tmp (gentmp)])
+         ((explicate-assign blocks) cnd tmp ((explicate-pred blocks) (Var tmp) thn els)))]
       [else (error "explicate-pred unhandled case" cnd)])))
 
 ;; TODO: we can filter out expression that doesn't change outside variables.
@@ -636,20 +629,48 @@
                                     ((explicate-effect blocks) els goto-cont)))]
         [(Prim 'vector-set! _) (Seq effect cont)]
         [(Collect _) (Seq effect cont)]
+        [(Apply fref args) (Seq (Call fref args) cont)]
         [else (error "explicate-tail unhandled case" effect)])))
 
 (define ((explicate-begin blocks) es cont)
   (foldl (explicate-effect blocks) cont (reverse es)))
 
+;; tail -> tail
+(define ((prepend-fname-tail fname) tail)
+  (define recur (prepend-fname-tail fname))
+  (match tail
+    [(Goto l) (Goto (symbol-append fname l))]
+    [(Seq s t) (Seq s (recur t))]
+    [(IfStmt cnd els thn) (IfStmt cnd (recur els) (recur thn))]
+    [else tail]))
+
+
+
+(define (prepend-fname-blocks fname blocks)
+  (for/list ([(label tail) (in-dict blocks)])
+            (cons (symbol-append fname label)
+                  ((prepend-fname-tail fname) tail))))
+
+
 ;; explicate-control : Lwhile^atm -> Cwhile
 (define (explicate-control p)
   (match p
-    [(Program info e)
-     (CProgram info
+    [(ProgramDefs info defs)
+     (ProgramDefs
+      info
+      (map (lambda (d)
+             (define body (Def-body d))
+             (struct-copy
+              Def
+              d
+              [body
                (let ([basic-blocks (make-hash)])
                  (begin
-                   (dict-set! basic-blocks (cp-label 'start) ((explicate-tail basic-blocks) e))
-                   basic-blocks)))]))
+                   (dict-set! basic-blocks (cp-label 'start) ((explicate-tail basic-blocks) body))
+                   (define blocks (hash->list basic-blocks))
+                   (prepend-fname-blocks (Def-name d) blocks)
+                   ))]))
+           defs))]))
 
 (define (atm->args a)
   (match a
@@ -1291,7 +1312,7 @@
     ("expose allocation" ,expose-allocation ,interp-Lfun-prime ,type-check-Lfun)
     ("uncover get!" ,uncover-getbang ,interp-Lfun-prime ,type-check-Lfun)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime ,type-check-Lfun)
-    ; ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
+    ("explicate control" ,explicate-control ,interp-Cfun ,type-check-Cfun)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
